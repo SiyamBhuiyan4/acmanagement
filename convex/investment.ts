@@ -30,11 +30,17 @@ export const current = query({
   args: { token: v.string() },
   handler: async (ctx, args) => {
     await requireSession(ctx, args.token);
-    const row = await ctx.db
-      .query("counters")
-      .withIndex("by_name", (q) => q.eq("name", COUNTER_NAME))
-      .unique();
-    return row?.value ?? 0;
+    /*
+      Dynamic total: sum of (quantity × costPrice) for every active product.
+      Always reflects the true value of unsold stock on the shelf, without
+      depending on whether every buy/sell event correctly bumped a counter.
+    */
+    const products = await ctx.db.query("products").collect();
+    let total = 0;
+    for (const p of products) {
+      if (!p.archived) total += (p.quantity ?? 0) * (p.costPrice ?? 0);
+    }
+    return total;
   },
 });
 
@@ -42,18 +48,18 @@ export const current = query({
   One-time correction, run by hand from the CLI
   (`npx convex run investment:recalculate`), never from the app itself.
 
-  Day to day, the balance is kept by `adjustInvestment` calls scattered across
-  every place stock moves — which only stays right if every one of those call
-  sites was already wired up correctly. This instead throws that history away
-  and prices what is on the shelf *right now*: what is left in every lot, at
-  what that lot cost.
+  Recomputes the counter from the live products table — the same value
+  `current` now returns dynamically. Only kept so the counter stays roughly
+  in sync for operators who inspect `counters` directly; the app itself no
+  longer reads it.
 */
 export const recalculate = internalMutation({
   args: {},
   handler: async (ctx) => {
+    const products = await ctx.db.query("products").collect();
     let total = 0;
-    for (const lot of await ctx.db.query("stockBatches").collect()) {
-      total += (lot.remaining ?? lot.quantity) * lot.unitCost;
+    for (const p of products) {
+      if (!p.archived) total += (p.quantity ?? 0) * (p.costPrice ?? 0);
     }
     const row = await ctx.db
       .query("counters")

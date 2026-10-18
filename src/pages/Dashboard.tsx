@@ -41,7 +41,6 @@ export function DashboardPage({ onNavigate }: { onNavigate: (r: "products" | "sa
   const { fmt, fmtNum, fmtPercent } = useSettings();
   const t = useT();
   const data = useAuthedQuery(api.dashboard.overview);
-  const investment = useAuthedQuery(api.investment.current);
   const range = useRangeFilter("ac.range.dashboard");
   const [sellOpen, setSellOpen] = useState(false);
   const [productOpen, setProductOpen] = useState(false);
@@ -304,18 +303,16 @@ export function DashboardPage({ onNavigate }: { onNavigate: (r: "products" | "sa
               sub={`${fmtNum(inventory.inStockCount)} · ${fmt(inventory.inventoryCost)} ${t("dash.atCost")}`}
             />
             {/*
-              Rises when stock is bought through the Costs page's "Product
-              purchase cost" tab, falls when anything sells — see
-              convex/investment.ts. Not the same figure as "Available stock
-              at cost": it only moves on those two triggers, so it starts at
-              zero and stays wrong until Siyam sets its true starting balance.
+              Dynamic total: the cost-price value of every unit currently on
+              the shelf, across all active products. Always accurate because it
+              is derived from the live `products` table, not a running counter.
             */}
             <StatTile
               accent="amber"
               label={t("dash.investment")}
               value={
                 <AnimatedNumber
-                  value={investment ?? 0}
+                  value={inventory.inventoryCost}
                   format={(n) => (n < 0 ? `−${fmt(Math.abs(n))}` : fmt(n))}
                 />
               }
