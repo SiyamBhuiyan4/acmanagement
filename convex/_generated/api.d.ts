@@ -18,12 +18,14 @@ import type * as fixedCosts from "../fixedCosts.js";
 import type * as investment from "../investment.js";
 import type * as orders from "../orders.js";
 import type * as otp from "../otp.js";
+import type * as productCategories from "../productCategories.js";
 import type * as products from "../products.js";
 import type * as profit from "../profit.js";
 import type * as sales from "../sales.js";
 import type * as seed from "../seed.js";
 import type * as shared from "../shared.js";
 import type * as trainees from "../trainees.js";
+import type * as vendorCategories from "../vendorCategories.js";
 import type * as vendors from "../vendors.js";
 
 import type {
@@ -43,12 +45,14 @@ declare const fullApi: ApiFromModules<{
   investment: typeof investment;
   orders: typeof orders;
   otp: typeof otp;
+  productCategories: typeof productCategories;
   products: typeof products;
   profit: typeof profit;
   sales: typeof sales;
   seed: typeof seed;
   shared: typeof shared;
   trainees: typeof trainees;
+  vendorCategories: typeof vendorCategories;
   vendors: typeof vendors;
 }>;
 
