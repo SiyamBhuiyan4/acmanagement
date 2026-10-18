@@ -1,6 +1,7 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
+  BarChart3,
   Folder,
   FolderPlus,
   Globe,
@@ -8,6 +9,7 @@ import {
   MapPin,
   MessageCircle,
   Phone,
+  Plus,
   Trash2,
   Truck,
   Upload,
@@ -15,24 +17,22 @@ import {
 } from "lucide-react";
 import { api } from "../../convex/_generated/api";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
-import { Badge, Button, Input, Modal, cx } from "./ui";
+import { Button, Input, Modal, cx } from "./ui";
 import { ContactPhotoAvatar } from "./ContactPhotoAvatar";
 import { PasscodeConfirmDialog } from "./PasscodeConfirmDialog";
+import { VendorPurchaseHistory } from "./VendorPurchaseHistory";
+import { VendorAddLotPanel } from "./VendorAddLotPanel";
+import { SidePanelCard } from "./SidePanelCard";
+import { CategoryBreadcrumb } from "./CategoryBreadcrumb";
+import { useVendorCategories } from "../lib/vendorCategories";
 import { useT } from "../lib/i18n";
-import { gradientFor } from "../lib/avatar";
+import { avatarGradientFor } from "../lib/avatar";
 import { plural } from "../lib/format";
 import { externalUrl, whatsappUrl } from "../../convex/shared";
 import { errorMessage, useToast } from "../lib/toast";
 import { useAuthedMutation, useAuthedQuery } from "../lib/session";
 import { mediaKindOf, uploadFile, useFileDrop, useUploadProgress } from "../lib/upload";
 
-const CATEGORY_KEY = {
-  spawn: "vendors.categorySpawn",
-  materials: "vendors.categoryMaterials",
-  equipment: "vendors.categoryEquipment",
-  packaging: "vendors.categoryPackaging",
-  other: "vendors.categoryOther",
-} as const;
 
 export function VendorDetailDialog({
   open,
@@ -46,6 +46,7 @@ export function VendorDetailDialog({
   const t = useT();
   const toast = useToast();
   const data = useAuthedQuery(api.vendors.detail, vendorId ? { id: vendorId } : "skip");
+  const { label, categoryOf, subCategoryOf, allCategories } = useVendorCategories();
   const createFolder = useAuthedMutation(api.vendors.createFolder);
   const removeFolder = useAuthedMutation(api.vendors.removeFolder);
   const generateUploadUrl = useAuthedMutation(api.vendors.generateUploadUrl);
@@ -63,8 +64,27 @@ export function VendorDetailDialog({
     null,
   );
   const fileInputRef = useRef<HTMLInputElement>(null);
+  /*
+    The purchase dashboard opens beside the profile rather than below it, so
+    the profile stays short and the numbers get a panel of their own.
+  */
+  const [dashboardOpen, setDashboardOpen] = useState(false);
+  const [addLotOpen, setAddLotOpen] = useState(false);
+  useEffect(() => {
+    if (!open) {
+      setDashboardOpen(false);
+      setAddLotOpen(false);
+    }
+  }, [open, vendorId]);
 
   const name = data?.vendor.name ?? "";
+  const vendorSubCategory = data?.vendor ? subCategoryOf(data.vendor) : null;
+  const vendorCategory = data?.vendor
+    ? categoryOf(data.vendor) ??
+      (vendorSubCategory?.parentId
+        ? allCategories.find((c) => c._id === vendorSubCategory.parentId) ?? null
+        : null)
+    : null;
   const isUnfiledView = openFolderId === "unfiled";
   const openFolder =
     openFolderId && !isUnfiledView ? (data?.folders.find((f) => f._id === openFolderId) ?? null) : null;
@@ -117,9 +137,45 @@ export function VendorDetailDialog({
         setOpenFolderId(null);
         onClose();
       }}
+      onBack={() => {
+        setDashboardOpen(false);
+        setAddLotOpen(false);
+      }}
+      headerActions={
+        <Button
+          size="sm"
+          variant="primary"
+          className="h-8 gap-1.5 text-[12.5px] px-3 font-semibold shadow-sm"
+          onClick={() => {
+            setDashboardOpen(false);
+            setAddLotOpen((prev) => !prev);
+          }}
+        >
+          <Plus size={14} /> Add lot
+        </Button>
+      }
+      asideLeft={
+        addLotOpen && data ? (
+          <VendorAddLotPanel
+            vendorId={data.vendor._id}
+            vendorName={data.vendor.name}
+            onClose={() => setAddLotOpen(false)}
+          />
+        ) : undefined
+      }
+      aside={
+        dashboardOpen && data ? (
+          <VendorDashboardPanel
+            name={data.vendor.name}
+            lots={data.lots}
+            onClose={() => setDashboardOpen(false)}
+          />
+        ) : undefined
+      }
       icon={
         data?.vendor ? (
           <ContactPhotoAvatar
+            name={data.vendor.name}
             photoUrl={data.vendor.photoUrl}
             onUpload={async (file) => {
               const uploadUrl = await generateUploadUrl({});
@@ -132,9 +188,17 @@ export function VendorDetailDialog({
         )
       }
       iconInteractive={Boolean(data?.vendor)}
-      gradient={name ? gradientFor(name) : undefined}
+      gradient={name ? avatarGradientFor(name) : undefined}
       title={name || t("vendors.title")}
-      subtitle={data ? t(CATEGORY_KEY[data.vendor.category]) : undefined}
+      subtitle={
+        vendorCategory ? (
+          <CategoryBreadcrumb
+            category={label(vendorCategory)}
+            subCategory={vendorSubCategory ? label(vendorSubCategory) : null}
+            size="sm"
+          />
+        ) : undefined
+      }
       width="sm:max-w-2xl"
     >
       {!data ? (
@@ -236,17 +300,17 @@ export function VendorDetailDialog({
                     </Button>
                   </form>
                 )}
-                <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+                <div className="flex flex-wrap justify-center gap-2.5">
                   {data.folders.map((f) => {
                     const count = data.media.filter((m) => m.folderId === f._id).length;
                     return (
                       <button
                         key={f._id}
                         onClick={() => setOpenFolderId(f._id)}
-                        className="flex flex-col items-start gap-2 rounded-xl border border-line bg-page px-3.5 py-3 text-left transition-colors hover:bg-surface-2"
+                        className="flex min-w-0 w-[calc(50%-0.3125rem)] sm:w-[calc((100%-1.25rem)/3)] shrink-0 flex-col items-start gap-2 rounded-xl border border-line bg-page px-3.5 py-3 text-left transition-colors hover:bg-surface-2"
                       >
                         <Folder size={20} className="text-accent" aria-hidden />
-                        <span className="min-w-0 truncate text-[13px] font-semibold text-ink">
+                        <span className="w-full truncate text-[13px] font-semibold text-ink">
                           {f.name}
                         </span>
                         <span className="text-[11px] text-ink-3">{plural(count, "file")}</span>
@@ -258,10 +322,10 @@ export function VendorDetailDialog({
                   {unfiledMedia.length > 0 && (
                     <button
                       onClick={() => setOpenFolderId("unfiled")}
-                      className="flex flex-col items-start gap-2 rounded-xl border border-line bg-page px-3.5 py-3 text-left transition-colors hover:bg-surface-2"
+                      className="flex min-w-0 w-[calc(50%-0.3125rem)] sm:w-[calc((100%-1.25rem)/3)] shrink-0 flex-col items-start gap-2 rounded-xl border border-line bg-page px-3.5 py-3 text-left transition-colors hover:bg-surface-2"
                     >
                       <Folder size={20} className="text-ink-3" aria-hidden />
-                      <span className="min-w-0 truncate text-[13px] font-semibold text-ink">
+                      <span className="w-full truncate text-[13px] font-semibold text-ink">
                         {t("vendors.unfiled")}
                       </span>
                       <span className="text-[11px] text-ink-3">{plural(unfiledMedia.length, "file")}</span>
@@ -366,28 +430,22 @@ export function VendorDetailDialog({
             )}
           </div>
 
-          {data.lots.length > 0 && (
-            <div>
-              <p className="mb-2.5 text-[10.5px] font-bold tracking-[0.09em] text-ink-3 uppercase">
-                {t("vendors.lotsBought")}
-              </p>
-              <ul className="flex flex-col gap-2">
-                {data.lots.map((l) => (
-                  <li
-                    key={l._id}
-                    className="flex items-center justify-between gap-3 rounded-xl border border-line bg-page px-3.5 py-2.5"
-                  >
-                    <div className="min-w-0">
-                      <p className="truncate text-[13px] font-semibold text-ink">{l.productName}</p>
-                      <p className="mt-0.5 text-[11.5px] text-ink-3">
-                        <Badge tone="accent">{l.label}</Badge>
-                      </p>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+          <button
+            type="button"
+            onClick={() => {
+              setAddLotOpen(false);
+              setDashboardOpen((prev) => !prev);
+            }}
+            aria-expanded={dashboardOpen}
+            className={cx(
+              "ac-glow group flex w-full items-center justify-center gap-2 rounded-2xl border px-4 py-3.5",
+              "border-accent/40 bg-accent-soft/40 text-[13.5px] font-medium tracking-wide text-ink-2",
+              "transition-colors hover:bg-accent-soft hover:text-ink",
+            )}
+          >
+            <BarChart3 size={16} className="text-accent transition-transform group-hover:scale-110" />
+            {dashboardOpen ? t("vendors.hideDashboard") : t("vendors.dashboard")}
+          </button>
         </div>
       )}
 
@@ -415,5 +473,23 @@ export function VendorDetailDialog({
         }}
       />
     </Modal>
+  );
+}
+
+/** The vendor's purchase dashboard, as the side panel of their profile. */
+function VendorDashboardPanel({
+  name,
+  lots,
+  onClose,
+}: {
+  name: string;
+  lots: Doc<"stockBatches">[];
+  onClose: () => void;
+}) {
+  const t = useT();
+  return (
+    <SidePanelCard icon={<BarChart3 size={18} />} title={t("vendors.dashboard")} subtitle={name} onClose={onClose}>
+      <VendorPurchaseHistory lots={lots} />
+    </SidePanelCard>
   );
 }

@@ -1,20 +1,19 @@
-import { Camera, Layers, Package, Pencil, Plus, Receipt, Trash2, TrendingUp, Wallet } from "lucide-react";
+import { Camera, Layers, Package, Pencil, Receipt, Trash2, TrendingUp, Wallet } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../convex/_generated/api";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
-import { Badge, Button, Modal, cx } from "./ui";
+import { Badge, Modal, cx } from "./ui";
 import { BatchDialog, type BatchInput } from "./BatchDialog";
+import { LotRemoveDialog } from "./LotRemoveDialog";
 import { LotDetailDialog } from "./LotDetailDialog";
 import { VendorDetailDialog } from "./VendorDetailDialog";
-import { PasscodeConfirmDialog } from "./PasscodeConfirmDialog";
+import { CategoryBreadcrumb } from "./CategoryBreadcrumb";
 import { useSettings } from "../lib/settings";
 import { useT } from "../lib/i18n";
 import { gradientFor } from "../lib/avatar";
-import { plural } from "../lib/format";
 import { errorMessage, useToast } from "../lib/toast";
 import { useAuthedMutation, useAuthedQuery } from "../lib/session";
 import { uploadFile, useFileDrop, useUploadProgress } from "../lib/upload";
-import { variantAvailable } from "../../convex/shared";
 
 type ProductWithPhoto = Doc<"products"> & { photoUrl?: string | null };
 
@@ -113,8 +112,10 @@ function toBatchInput(lot: Doc<"stockBatches">): BatchInput {
     purchasedAt: lot.purchasedAt,
     quantity: lot.quantity,
     unitCost: lot.unitCost,
+    unitPrice: lot.unitPrice,
     remaining: lot.remaining,
     note: lot.note,
+    vendorId: lot.vendorId,
   };
 }
 
@@ -134,10 +135,9 @@ export function ProductDetailDialog({
 }) {
   const { fmt, fmtNum, fmtPercent, fmtDateFull, fmtDateTime } = useSettings();
   const t = useT();
-  const toast = useToast();
   const data = useAuthedQuery(api.products.detail, productId ? { id: productId } : "skip");
-  const removeBatch = useAuthedMutation(api.profit.removeBatch);
-  const [addingLot, setAddingLot] = useState(false);
+  // Lots with nothing left — sold out or taken off — stay out of the way.
+  const [showFinished, setShowFinished] = useState(false);
   const [editingLot, setEditingLot] = useState<BatchInput | null>(null);
   const [deletingLot, setDeletingLot] = useState<BatchInput | null>(null);
   const [viewingLot, setViewingLot] = useState<Id<"stockBatches"> | null>(null);
@@ -153,7 +153,14 @@ export function ProductDetailDialog({
       iconInteractive={Boolean(data?.product)}
       gradient={name ? gradientFor(name) : undefined}
       title={name || t("detail.title")}
-      subtitle={data?.product.category ?? undefined}
+      subtitle={
+        data?.product.category ? (
+          <CategoryBreadcrumb
+            category={data.product.category}
+            subCategory={data.product.subCategory}
+          />
+        ) : undefined
+      }
       width="sm:max-w-2xl"
     >
       {!data ? (
@@ -202,33 +209,6 @@ export function ProductDetailDialog({
             </div>
           )}
 
-          {data.product.variants && data.product.variants.length > 0 && (
-            <div>
-              <p className="mb-2.5 text-[10.5px] font-bold tracking-[0.09em] text-ink-3 uppercase">
-                {t("products.multipleSizes")}
-              </p>
-              <ul className="flex flex-col gap-2">
-                {data.product.variants.map((v) => (
-                  <li
-                    key={v.id}
-                    className="flex items-center justify-between gap-3 rounded-xl border border-line bg-page px-3.5 py-2.5"
-                  >
-                    <div className="min-w-0">
-                      <p className="truncate text-[13px] font-semibold text-ink">{v.label}</p>
-                      <p className="mt-0.5 text-[12px] text-ink-3">
-                        {fmt(v.costPrice)}
-                        {v.sellPrice !== undefined ? ` → ${fmt(v.sellPrice)}` : ""}
-                      </p>
-                    </div>
-                    <Badge tone="accent">
-                      {fmtNum(variantAvailable(data.product, v.id))} {t("products.variantStock").toLowerCase()}
-                    </Badge>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
           {/*
             Lots are bought against a product, so the place to keep them is
             the product — adding, correcting and dropping one alike. Sending
@@ -240,18 +220,18 @@ export function ProductDetailDialog({
               <p className="text-[10.5px] font-bold tracking-[0.09em] text-ink-3 uppercase">
                 {t("detail.stockLots")}
               </p>
-              <Button size="sm" variant="secondary" onClick={() => setAddingLot(true)}>
-                <Plus size={15} />
-                {t("detail.addLot")}
-              </Button>
             </div>
             {data.lots.length === 0 ? (
               <p className="text-[13px] text-ink-3">{t("detail.noLots")}</p>
             ) : (
               <ul className="flex flex-col gap-2">
-                {data.lots.map((l) => {
+                {data.lots
+                  .filter((l) => showFinished || (l.remaining ?? l.quantity) > 0)
+                  .map((l) => {
                   // Nothing to show a margin from until a price is decided.
                   const unitProfit = l.unitPrice !== undefined ? l.unitPrice - l.unitCost : null;
+                  // A lot taken off was never sold out, so it has no margin to show.
+                  const showProfit = !l.removedAt;
                   const lot = toBatchInput(l);
                   return (
                     <li
@@ -267,6 +247,11 @@ export function ProductDetailDialog({
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
                           <Badge tone="accent">{l.label}</Badge>
+                          {l.removedAt ? (
+                            <Badge tone="critical">Removed</Badge>
+                          ) : (
+                            (l.remaining ?? l.quantity) === 0 && <Badge tone="neutral">Sold out</Badge>
+                          )}
                           <span className="text-[12px] text-ink-3">{fmtDateFull(l.purchasedAt)}</span>
                         </div>
                         {/* What is left matters more than what was bought: it
@@ -279,7 +264,7 @@ export function ProductDetailDialog({
                         {l.note && <p className="mt-1 text-[12px] text-ink-3">{l.note}</p>}
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
-                        {unitProfit === null ? (
+                        {!showProfit ? null : unitProfit === null ? (
                           <span className="px-1 text-[12.5px] text-ink-3">
                             {t("detail.priceOpen")}
                           </span>
@@ -304,6 +289,7 @@ export function ProductDetailDialog({
                         >
                           <Pencil size={14} />
                         </button>
+                        {!l.removedAt && (
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -315,11 +301,22 @@ export function ProductDetailDialog({
                         >
                           <Trash2 size={14} />
                         </button>
+                        )}
                       </div>
                     </li>
                   );
                 })}
               </ul>
+            )}
+            {data.lots.some((l) => (l.remaining ?? l.quantity) === 0) && (
+              <button
+                onClick={() => setShowFinished((v) => !v)}
+                className="mt-2 text-[12px] font-semibold text-accent hover:underline"
+              >
+                {showFinished
+                  ? "Hide finished lots"
+                  : `Show finished lots (${data.lots.filter((l) => (l.remaining ?? l.quantity) === 0).length})`}
+              </button>
             )}
           </div>
 
@@ -357,11 +354,6 @@ export function ProductDetailDialog({
         </div>
       )}
       <BatchDialog
-        open={addingLot}
-        onClose={() => setAddingLot(false)}
-        presetProductId={productId ?? undefined}
-      />
-      <BatchDialog
         open={editingLot !== null}
         onClose={() => setEditingLot(null)}
         batch={editingLot}
@@ -377,21 +369,7 @@ export function ProductDetailDialog({
         onClose={() => setViewingVendor(null)}
         vendorId={viewingVendor}
       />
-      <PasscodeConfirmDialog
-        open={deletingLot !== null}
-        onClose={() => setDeletingLot(null)}
-        title={t("confirm.deleteLot")}
-        body={
-          deletingLot
-            ? `${deletingLot.label} · ${plural(deletingLot.remaining ?? deletingLot.quantity, "unit")} left\n${t("confirm.deleteLotBody")}`
-            : ""
-        }
-        onConfirm={async (passcode) => {
-          if (!deletingLot) return;
-          await removeBatch({ id: deletingLot.id as Id<"stockBatches">, passcode });
-          toast.ok(t("toast.lotDeleted"));
-        }}
-      />
+      <LotRemoveDialog lot={deletingLot} onClose={() => setDeletingLot(null)} />
     </Modal>
   );
 }

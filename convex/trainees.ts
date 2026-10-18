@@ -2,11 +2,29 @@ import { mutation, query, type QueryCtx } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import { requireSession, verifyPasscode } from "./auth";
+import { endTraineeSessions, hashPassword, normaliseUsername, validateUsername } from "./traineeAuth";
+import { deleteSubmission } from "./courses";
 
-/** Attaches a signed, short-lived photo URL — the stored `photoId` is never useful to the browser on its own. */
+/**
+ * Attaches a signed, short-lived photo URL — the stored `photoId` is never
+ * useful to the browser on its own — and leaves the password hash and lock
+ * state behind: nothing on screen needs them, so they never leave the server.
+ */
 async function withPhoto<T extends { photoId?: Id<"_storage"> }>(ctx: QueryCtx, p: T) {
   const photoUrl = p.photoId ? await ctx.storage.getUrl(p.photoId) : null;
-  return { ...p, photoUrl };
+  const { passwordHash, passwordSalt, loginFailures, lockedUntil, ...rest } = p as T & {
+    passwordHash?: string;
+    passwordSalt?: string;
+    loginFailures?: number;
+    lockedUntil?: number;
+  };
+  void passwordHash;
+  void passwordSalt;
+  void loginFailures;
+  void lockedUntil;
+  return { ...rest, photoUrl } as Omit<T, "passwordHash" | "passwordSalt" | "loginFailures" | "lockedUntil"> & {
+    photoUrl: string | null;
+  };
 }
 
 export const list = query({
@@ -56,8 +74,28 @@ function trim(value?: string) {
   return value?.trim() || undefined;
 }
 
-function validate(name: string) {
-  if (!name.trim()) throw new ConvexError("A trainee needs a name.");
+function validateCreate(args: {
+  name: string;
+  phone?: string;
+  fatherName?: string;
+  motherName?: string;
+  dateOfBirth?: number;
+  nationality?: string;
+  nidNumber?: string;
+  religion?: string;
+  hometown?: string;
+  currentAddress?: string;
+}) {
+  if (!args.name?.trim()) throw new ConvexError("Name is required.");
+  if (!args.phone?.trim()) throw new ConvexError("Phone number is required.");
+  if (!args.fatherName?.trim()) throw new ConvexError("Father's name is required.");
+  if (!args.motherName?.trim()) throw new ConvexError("Mother's name is required.");
+  if (!args.dateOfBirth) throw new ConvexError("Date of birth is required.");
+  if (!args.nationality?.trim()) throw new ConvexError("Nationality is required.");
+  if (!args.nidNumber?.trim()) throw new ConvexError("NID or Birth Certificate number is required.");
+  if (!args.religion?.trim()) throw new ConvexError("Religion is required.");
+  if (!args.hometown?.trim()) throw new ConvexError("Permanent address / Hometown is required.");
+  if (!args.currentAddress?.trim()) throw new ConvexError("Current address is required.");
 }
 
 const profileArgs = {
@@ -113,7 +151,7 @@ export const create = mutation({
   args: profileArgs,
   handler: async (ctx, args) => {
     await requireSession(ctx, args.token);
-    validate(args.name);
+    validateCreate(args);
     return await ctx.db.insert("trainees", { ...profilePatch(args), createdAt: Date.now() });
   },
 });
@@ -124,7 +162,7 @@ export const update = mutation({
     await requireSession(ctx, args.token);
     const row = await ctx.db.get(args.id);
     if (!row) throw new ConvexError("That trainee no longer exists.");
-    validate(args.name);
+    if (!args.name?.trim()) throw new ConvexError("A trainee needs a name.");
     await ctx.db.patch(args.id, profilePatch(args));
   },
 });
@@ -178,6 +216,26 @@ export const remove = mutation({
       await ctx.storage.delete(m.storageId);
       await ctx.db.delete(m._id);
     }
+    // Their courses, progress and sign-ins go with them.
+    for (const e of await ctx.db
+      .query("enrollments")
+      .withIndex("by_trainee", (q) => q.eq("traineeId", args.id))
+      .collect()) {
+      await ctx.db.delete(e._id);
+    }
+    for (const p of await ctx.db
+      .query("lessonProgress")
+      .withIndex("by_trainee", (q) => q.eq("traineeId", args.id))
+      .collect()) {
+      await ctx.db.delete(p._id);
+    }
+    for (const sub of await ctx.db
+      .query("submissions")
+      .withIndex("by_trainee", (q) => q.eq("traineeId", args.id))
+      .collect()) {
+      await deleteSubmission(ctx, sub);
+    }
+    await endTraineeSessions(ctx, args.id);
     await ctx.db.delete(args.id);
   },
 });
@@ -284,3 +342,111 @@ export const markCertificateIssued = mutation({
     await ctx.db.patch(args.id, { certificateIssuedAt: Date.now() });
   },
 });
+
+/* ------------------------------------------------------------------ login */
+
+/**
+ * Gives a trainee a login, or changes it — the username and password the
+ * shop hands them at the office. A new password signs them out everywhere.
+ */
+export const setLogin = mutation({
+  args: { token: v.string(), id: v.id("trainees"), username: v.string(), password: v.string() },
+  handler: async (ctx, args) => {
+    await requireSession(ctx, args.token);
+    const trainee = await ctx.db.get(args.id);
+    if (!trainee) throw new ConvexError("That trainee no longer exists.");
+    const username = normaliseUsername(args.username);
+    validateUsername(username);
+    const taken = await ctx.db
+      .query("trainees")
+      .withIndex("by_username", (q) => q.eq("username", username))
+      .unique();
+    if (taken && taken._id !== args.id) throw new ConvexError("That username is already taken.");
+    await ctx.db.patch(args.id, {
+      username,
+      ...(await hashPassword(args.password)),
+      loginFailures: 0,
+      lockedUntil: undefined,
+    });
+    await endTraineeSessions(ctx, args.id);
+  },
+});
+
+/** Takes a trainee's login away and signs them out. Their courses and progress stay. */
+export const removeLogin = mutation({
+  args: { token: v.string(), id: v.id("trainees"), passcode: v.string() },
+  handler: async (ctx, args) => {
+    await requireSession(ctx, args.token);
+    await verifyPasscode(ctx, args.passcode);
+    await ctx.db.patch(args.id, {
+      username: undefined,
+      passwordHash: undefined,
+      passwordSalt: undefined,
+      loginFailures: undefined,
+      lockedUntil: undefined,
+    });
+    await endTraineeSessions(ctx, args.id);
+  },
+});
+
+/* ------------------------------------------------------------ portal notes */
+
+const NOTE_KEY = "traineeNote";
+const MAX_NOTE = 5000;
+
+function cleanNote(text: string) {
+  const note = text.trim();
+  if (note.length > MAX_NOTE) throw new ConvexError(`Keep the note under ${MAX_NOTE} characters.`);
+  return note || undefined;
+}
+
+/** The note every trainee sees. */
+export const generalNote = query({
+  args: { token: v.string() },
+  handler: async (ctx, args) => {
+    await requireSession(ctx, args.token);
+    const row = await ctx.db
+      .query("appSettings")
+      .withIndex("by_key", (q) => q.eq("key", NOTE_KEY))
+      .unique();
+    const text = row?.text?.trim() || "";
+    return { text, updatedAt: text ? row!.updatedAt : null };
+  },
+});
+
+export const setGeneralNote = mutation({
+  args: { token: v.string(), text: v.string() },
+  handler: async (ctx, args) => {
+    await requireSession(ctx, args.token);
+    const text = cleanNote(args.text);
+    const row = await ctx.db
+      .query("appSettings")
+      .withIndex("by_key", (q) => q.eq("key", NOTE_KEY))
+      .unique();
+    if (row) await ctx.db.patch(row._id, { text, updatedAt: Date.now() });
+    else if (text) await ctx.db.insert("appSettings", { key: NOTE_KEY, text, updatedAt: Date.now() });
+  },
+});
+
+/** The note for one trainee only, shown in their portal. */
+export const setPortalNote = mutation({
+  args: { token: v.string(), id: v.id("trainees"), text: v.string() },
+  handler: async (ctx, args) => {
+    await requireSession(ctx, args.token);
+    if (!(await ctx.db.get(args.id))) throw new ConvexError("That trainee no longer exists.");
+    const text = cleanNote(args.text);
+    await ctx.db.patch(args.id, { portalNote: text, portalNoteUpdatedAt: text ? Date.now() : undefined });
+  },
+});
+
+/** The shop's private note for this trainee, kept for admin use. */
+export const setAdminNote = mutation({
+  args: { token: v.string(), id: v.id("trainees"), text: v.string() },
+  handler: async (ctx, args) => {
+    await requireSession(ctx, args.token);
+    if (!(await ctx.db.get(args.id))) throw new ConvexError("That trainee no longer exists.");
+    const text = cleanNote(args.text);
+    await ctx.db.patch(args.id, { note: text });
+  },
+});
+

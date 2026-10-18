@@ -23,15 +23,21 @@ if (!convexUrl) {
       <ConvexProvider client={convex}>
         <SettingsProvider>
           <ToastProvider>
-            <SessionProvider>
-              <PasscodeGate>
-                <App />
-              </PasscodeGate>
-            </SessionProvider>
+            <Root />
           </ToastProvider>
         </SettingsProvider>
       </ConvexProvider>
     </StrictMode>,
+  );
+}
+
+function Root() {
+  return (
+    <SessionProvider>
+      <PasscodeGate>
+        <App />
+      </PasscodeGate>
+    </SessionProvider>
   );
 }
 

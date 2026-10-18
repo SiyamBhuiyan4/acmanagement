@@ -1,18 +1,16 @@
 import { useMemo, useState } from "react";
-import { Hash, Landmark, Plus, StickyNote, Trash2 } from "lucide-react";
+import { Hash, Landmark, StickyNote, Trash2 } from "lucide-react";
 import { api } from "../../convex/_generated/api";
 import type { Doc } from "../../convex/_generated/dataModel";
-import { Button, Card, CardHeader, EmptyState } from "./ui";
+import { Card, CardHeader, EmptyState } from "./ui";
 import { StatTile } from "./StatTile";
 import { RangePills } from "./RangePills";
-import { ProductPurchaseDialog } from "./ProductPurchaseDialog";
-import { PasscodeConfirmDialog } from "./PasscodeConfirmDialog";
+import { LotRemoveDialog } from "./LotRemoveDialog";
 import { useSettings } from "../lib/settings";
 import { useT } from "../lib/i18n";
 import { gradientFor, initialOf } from "../lib/avatar";
 import { useRangeFilter } from "../lib/dateRange";
-import { useToast } from "../lib/toast";
-import { useAuthedMutation, useAuthedQuery } from "../lib/session";
+import { useAuthedQuery } from "../lib/session";
 
 /**
  * Stock bought and logged as an investment rather than an operating cost —
@@ -23,12 +21,9 @@ import { useAuthedMutation, useAuthedQuery } from "../lib/session";
 export function ProductPurchaseCostSection() {
   const { fmt, fmtNum, fmtDateTime } = useSettings();
   const t = useT();
-  const toast = useToast();
   const all = useAuthedQuery(api.profit.purchaseCostBatches, {});
-  const remove = useAuthedMutation(api.profit.removeBatch);
   const range = useRangeFilter("ac.range.investment");
 
-  const [addOpen, setAddOpen] = useState(false);
   const [deleting, setDeleting] = useState<Doc<"stockBatches"> | null>(null);
 
   const rows = useMemo(
@@ -56,13 +51,6 @@ export function ProductPurchaseCostSection() {
 
   return (
     <>
-      <div className="flex justify-end">
-        <Button variant="primary" onClick={() => setAddOpen(true)}>
-          <Plus size={17} />
-          {t("investment.add")}
-        </Button>
-      </div>
-
       {/* Same row as every other page's date filter: a label on the left, RangePills on the right. */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-[13.5px] text-ink-3">
@@ -133,14 +121,6 @@ export function ProductPurchaseCostSection() {
                 ? "Try a wider date range."
                 : t("investment.noneBody")
             }
-            action={
-              (all?.length ?? 0) === 0 ? (
-                <Button variant="primary" onClick={() => setAddOpen(true)}>
-                  <Plus size={17} />
-                  {t("investment.add")}
-                </Button>
-              ) : undefined
-            }
           />
         ) : (
           <ul className="flex flex-col divide-y divide-line">
@@ -156,7 +136,7 @@ export function ProductPurchaseCostSection() {
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-[14px] font-semibold text-ink">
                     {r.productName}
-                    {r.variantLabel && <span className="font-normal text-ink-3"> · {r.variantLabel}</span>}
+                    <span className="font-normal text-ink-3"> · {r.label}</span>
                   </p>
                   <p className="mt-0.5 text-[12px] text-ink-3">
                     {fmtNum(r.quantity)} × {fmt(r.unitCost)}
@@ -189,22 +169,9 @@ export function ProductPurchaseCostSection() {
         )}
       </Card>
 
-      <ProductPurchaseDialog open={addOpen} onClose={() => setAddOpen(false)} />
-
-      <PasscodeConfirmDialog
-        open={deleting !== null}
+      <LotRemoveDialog
+        lot={deleting ? { ...deleting, id: deleting._id } : null}
         onClose={() => setDeleting(null)}
-        title={t("investment.deleteTitle")}
-        body={
-          deleting
-            ? `${deleting.productName} — ${fmt(deleting.quantity * deleting.unitCost)} comes off Investment, and its stock comes off the product.`
-            : ""
-        }
-        onConfirm={async (passcode) => {
-          if (!deleting) return;
-          await remove({ id: deleting._id, passcode });
-          toast.ok(t("investment.deleted"));
-        }}
       />
     </>
   );

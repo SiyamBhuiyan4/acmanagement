@@ -7,6 +7,7 @@ import {
   PackagePlus,
   Pencil,
   Search,
+  Settings2,
   ShoppingCart,
   Trash2,
 } from "lucide-react";
@@ -18,15 +19,16 @@ import { useT } from "../lib/i18n";
 import { ProductDialog } from "../components/ProductDialog";
 import { ProductDetailDialog } from "../components/ProductDetailDialog";
 import { SaleDialog } from "../components/SaleDialog";
-import { BatchDialog } from "../components/BatchDialog";
 import { PasscodeConfirmDialog } from "../components/PasscodeConfirmDialog";
-import { SetStockDialog } from "../components/SetStockDialog";
 import { RangePills } from "../components/RangePills";
 import { useSettings } from "../lib/settings";
 import { useRangeFilter } from "../lib/dateRange";
 import { gradientFor, initialOf } from "../lib/avatar";
 import { useToast } from "../lib/toast";
 import { useAuthedQuery, useAuthedMutation } from "../lib/session";
+import { useProductCategories } from "../lib/productCategories";
+import { ProductCategoriesDialog } from "../components/ProductCategoriesDialog";
+import { CategoryBreadcrumb } from "../components/CategoryBreadcrumb";
 
 type ProductRow = Doc<"products"> & { photoUrl: string | null };
 
@@ -38,11 +40,13 @@ export function ProductsPage() {
   const toast = useToast();
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("");
+  const [subCategory, setSubCategory] = useState("");
   const [sort, setSort] = useState<SortKey>("newest");
   const [showArchived, setShowArchived] = useState(false);
+  const [managingCategories, setManagingCategories] = useState(false);
 
   const products = useAuthedQuery(api.products.list, { search, includeArchived: showArchived });
-  const categories = useAuthedQuery(api.products.categories) ?? [];
+  const { categories: productCats, allCategories, subcategoriesOf, label: catLabel, categoryOf, subCategoryOf } = useProductCategories();
   const range = useRangeFilter("ac.range.products");
   const salesWindow = useAuthedQuery(api.products.salesWindow);
 
@@ -59,11 +63,10 @@ export function ProductsPage() {
     return map;
   }, [salesWindow, range.since, range.untilExclusive]);
 
-  const setStock = useAuthedMutation(api.products.setStock);
   /*
-    Lots with stock left, so a card can say what this product actually cost —
-    which is a range once it has been bought twice at two prices, not the one
-    figure on the product.
+    Lots with stock left, so a card can say what this product costs and sells
+    for — a range once it has been bought twice at two prices. Empty lots are
+    not counted: their price can no longer be sold at.
   */
   const openLots = useAuthedQuery(api.profit.openLots) ?? [];
   const setArchived = useAuthedMutation(api.products.setArchived);
@@ -74,11 +77,21 @@ export function ProductsPage() {
   const [selling, setSelling] = useState<Doc<"products"> | null>(null);
   const [deleting, setDeleting] = useState<Doc<"products"> | null>(null);
   const [viewing, setViewing] = useState<Doc<"products"> | null>(null);
-  const [lotFor, setLotFor] = useState<Doc<"products"> | null>(null);
-  const [settingStock, setSettingStock] = useState<Doc<"products"> | null>(null);
 
   const visible = useMemo(() => {
-    const filtered = (products ?? []).filter((p) => !category || p.category === category);
+    const filtered = (products ?? []).filter((p) => {
+      if (category) {
+        const catDoc = categoryOf(p);
+        const matchesCategory = p.categoryId === category || catDoc?._id === category || p.category === category;
+        if (!matchesCategory) return false;
+        if (subCategory) {
+          const subDoc = subCategoryOf(p);
+          const matchesSub = p.subCategoryId === subCategory || subDoc?._id === subCategory || p.subCategory === subCategory;
+          if (!matchesSub) return false;
+        }
+      }
+      return true;
+    });
     return [...filtered].sort((a, b) => {
       if (sort === "name") return a.name.localeCompare(b.name);
       if (sort === "stockLow") return a.quantity - b.quantity;
@@ -91,9 +104,9 @@ export function ProductsPage() {
       }
       return b.createdAt - a.createdAt;
     });
-  }, [products, category, sort, profitByProduct]);
+  }, [products, category, subCategory, sort, profitByProduct, allCategories]);
 
-  const pager = usePagination(visible, `${search}|${category}|${sort}|${showArchived}`, 25);
+  const pager = usePagination(visible, `${search}|${category}|${subCategory}|${sort}|${showArchived}`, 25);
 
   return (
     <div className="flex flex-col gap-6">
@@ -129,22 +142,53 @@ export function ProductsPage() {
             aria-label={t("common.search")}
           />
         </div>
-        <div className="flex w-full gap-3 sm:w-auto">
-          <div className="flex-1 sm:w-48 sm:flex-none">
+        <div className="flex flex-wrap w-full gap-2.5 sm:w-auto">
+          <div className="w-full sm:w-44 sm:flex-none">
             <Select
               value={category}
-              onChange={(e) => setCategory(e.target.value)}
+              onChange={(e) => {
+                setCategory(e.target.value);
+                setSubCategory("");
+              }}
               aria-label={t("common.category")}
+              className="transition-all hover:bg-surface-2/60"
             >
-              <option value="">{t("common.allCategories")}</option>
-              {categories.map((c) => (
-                <option key={c} value={c}>
-                  {c}
+              <option value="">{t("products.allCategories")}</option>
+              {productCats.map((c) => (
+                <option key={c._id} value={c._id}>
+                  {catLabel(c)}
                 </option>
               ))}
             </Select>
           </div>
-          <div className="flex-1 sm:flex-none">
+          {category && subcategoriesOf(category).length > 0 && (
+            <div className="w-full sm:w-44 sm:flex-none">
+              <Select
+                value={subCategory}
+                onChange={(e) => setSubCategory(e.target.value)}
+                aria-label={t("products.subCategory")}
+                className="transition-all hover:bg-surface-2/60"
+              >
+                <option value="">{t("products.allSubCategories")}</option>
+                {subcategoriesOf(category).map((sc) => (
+                  <option key={sc._id} value={sc._id}>
+                    {catLabel(sc)}
+                  </option>
+                ))}
+              </Select>
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => setManagingCategories(true)}
+            className="ac-press inline-flex h-11 w-full sm:w-auto sm:shrink-0 items-center justify-center gap-1.5 rounded-xl border border-line-strong bg-page px-3.5 text-[13px] font-semibold text-ink-3 transition-all hover:bg-surface-2 hover:text-ink hover:border-line-strong/80 focus:border-accent focus:outline-none focus:ring-4 focus:ring-[var(--ring)] active:bg-surface-3"
+            title={t("vendors.manageCategories")}
+            aria-label={t("vendors.manageCategories")}
+          >
+            <Settings2 size={16} className="shrink-0" />
+            <span>{t("vendors.manageCategories")}</span>
+          </button>
+          <div className="w-full sm:w-auto sm:flex-none">
             <SortSelect
               value={sort}
               onChange={setSort}
@@ -159,7 +203,7 @@ export function ProductsPage() {
             />
           </div>
         </div>
-        <label className="flex h-11 w-full cursor-pointer items-center gap-2.5 rounded-xl border border-line-strong bg-page px-3.5 text-[13.5px] font-medium text-ink-2 sm:w-auto">
+        <label className="flex h-11 w-full cursor-pointer items-center gap-2.5 rounded-xl border border-line-strong bg-page px-3.5 text-[13.5px] font-medium text-ink-2 transition-all hover:bg-surface-2 hover:text-ink sm:w-auto">
           <input
             type="checkbox"
             checked={showArchived}
@@ -193,7 +237,7 @@ export function ProductsPage() {
             body={
               search || category
                 ? "Try a different search term or clear the category filter."
-                : "Add a product with a name, a cost price and however many units you have."
+                : "Add a product, then a lot with how many you bought and its buy and sell price."
             }
             action={
               !search && !category ? (
@@ -217,7 +261,6 @@ export function ProductsPage() {
                 key={product._id}
                 product={product}
                 lots={openLots.filter((l) => l.productId === product._id)}
-                onAddLot={() => setLotFor(product)}
                 onView={() => setViewing(product)}
                 onSell={() => setSelling(product)}
                 onEdit={() => setEditing(product)}
@@ -228,7 +271,6 @@ export function ProductsPage() {
                     product.archived ? `${product.name} restored.` : `${product.name} archived.`,
                   );
                 }}
-                onSetStock={() => setSettingStock(product)}
                 fmt={fmt}
                 profit={profitByProduct.get(product._id) ?? 0}
                 rangeLabel={range.activeLabel.full}
@@ -256,12 +298,19 @@ export function ProductsPage() {
         onClose={() => setViewing(null)}
         productId={viewing?._id ?? null}
       />
-      <BatchDialog
-        open={lotFor !== null}
-        onClose={() => setLotFor(null)}
-        presetProductId={lotFor?._id}
-      />
       <ProductDialog open={addOpen} onClose={() => setAddOpen(false)} />
+      <ProductCategoriesDialog
+        open={managingCategories}
+        onClose={() => setManagingCategories(false)}
+        onDeleted={(id) => {
+          if (category === id) {
+            setCategory("");
+            setSubCategory("");
+          } else if (subCategory === id) {
+            setSubCategory("");
+          }
+        }}
+      />
       <ProductDialog open={editing !== null} onClose={() => setEditing(null)} product={editing} />
       <SaleDialog
         open={selling !== null}
@@ -281,17 +330,6 @@ export function ProductsPage() {
           toast.ok(t("toast.productDeleted"));
         }}
       />
-      <SetStockDialog
-        open={settingStock !== null}
-        onClose={() => setSettingStock(null)}
-        productName={settingStock?.name ?? ""}
-        currentQuantity={settingStock?.quantity ?? 0}
-        onConfirm={async (quantity, passcode) => {
-          if (!settingStock) return;
-          await setStock({ id: settingStock._id, quantity, passcode });
-          toast.ok(t("toast.stockUpdated"));
-        }}
-      />
     </div>
   );
 }
@@ -299,35 +337,30 @@ export function ProductsPage() {
 function ProductCard({
   product,
   lots,
-  onAddLot,
   onView,
   onSell,
   onEdit,
   onDelete,
   onArchiveToggle,
-  onSetStock,
   fmt,
   profit,
   rangeLabel,
 }: {
   product: ProductRow;
-  lots: { unitCost: number; remaining: number }[];
-  onAddLot: () => void;
+  lots: { unitCost: number; unitPrice?: number; remaining: number }[];
   onView: () => void;
   onSell: () => void;
   onEdit: () => void;
   onDelete: () => void;
   onArchiveToggle: () => void;
-  onSetStock: () => void;
   fmt: (v: number) => string;
   /** This product's actual profit in the page's selected date range. */
   profit: number;
   rangeLabel: string;
 }) {
   const t = useT();
-  // Ascending, so the footer can read the cheapest and dearest off the ends.
-  const lotCosts = [...lots].map((l) => l.unitCost).sort((a, b) => a - b);
-  const hasVariants = Boolean(product.variants?.length);
+  const lotCosts = lots.map((l) => l.unitCost);
+  const lotPrices = lots.map((l) => l.unitPrice).filter((p): p is number => p !== undefined);
   const out = product.quantity === 0;
   const low = product.quantity > 0 && product.quantity <= 3;
   const [showAll, setShowAll] = useState(false);
@@ -382,16 +415,11 @@ function ProductCard({
           </div>
         )}
 
-        {/* Floating Top Badges (Category, Stock, Archived) */}
+        {/* Floating Top Badges (Stock, Archived) */}
         <div className="absolute top-3 left-3 z-10 flex flex-wrap items-center gap-1.5 max-w-[calc(100%-8.5rem)]">
           {product.archived && (
             <span className="inline-flex items-center rounded-lg bg-surface/90 px-2.5 py-1 text-[11px] font-bold text-ink-2 shadow-[var(--shadow-sm)] backdrop-blur-md border border-line/60">
               Archived
-            </span>
-          )}
-          {product.category && (
-            <span className="inline-flex items-center rounded-lg bg-surface/90 px-2.5 py-1 text-[11px] font-bold text-accent shadow-[var(--shadow-sm)] backdrop-blur-md border border-accent/25">
-              {product.category}
             </span>
           )}
           {out ? (
@@ -415,9 +443,6 @@ function ProductCard({
           onClick={(e) => e.stopPropagation()}
           className="absolute top-3 right-3 z-10 flex items-center gap-0.5 rounded-xl border border-line-strong/30 bg-surface/90 p-1 shadow-[var(--shadow-card)] backdrop-blur-md transition-all duration-200 opacity-90 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100"
         >
-          <IconButton label="Add lot" onClick={onAddLot}>
-            <Layers size={14} />
-          </IconButton>
           <IconButton label="Edit" onClick={onEdit}>
             <Pencil size={14} />
           </IconButton>
@@ -432,6 +457,12 @@ function ProductCard({
 
       {/* -------------------- Card Content Body -------------------- */}
       <div className="flex flex-1 flex-col p-5">
+        <CategoryBreadcrumb
+          category={product.category}
+          subCategory={product.subCategory}
+          className="mb-2"
+        />
+
         {/* Title */}
         <div className="flex items-start justify-between gap-2">
           <button
@@ -470,33 +501,10 @@ function ProductCard({
         <div className="mt-4 rounded-xl border border-line bg-surface-2/40 p-3">
           <div className="grid grid-cols-3 gap-2 divide-x divide-line">
             <div className="min-w-0 pr-1">
-              <MoneyStat
-                label="Cost price"
-                value={
-                  hasVariants
-                    ? fmtRange(fmt, product.variants!.map((v) => v.costPrice))
-                    : lotCosts.length > 0
-                      ? lotCosts[0] === lotCosts[lotCosts.length - 1]
-                        ? fmt(lotCosts[0])
-                        : `${fmt(lotCosts[0])}–${fmt(lotCosts[lotCosts.length - 1])}`
-                      : fmt(product.costPrice)
-                }
-              />
+              <MoneyStat label="Buy price" value={fmtRange(fmt, lotCosts)} />
             </div>
             <div className="min-w-0 px-2">
-              <MoneyStat
-                label={t("products.sellPrice")}
-                value={
-                  hasVariants
-                    ? fmtRange(
-                        fmt,
-                        product.variants!.map((v) => v.sellPrice).filter((p): p is number => p !== undefined),
-                      )
-                    : product.sellPrice !== undefined
-                      ? fmt(product.sellPrice)
-                      : "—"
-                }
-              />
+              <MoneyStat label={t("products.sellPrice")} value={fmtRange(fmt, lotPrices)} />
             </div>
             <div className="min-w-0 pl-2">
               <MoneyStat
@@ -529,26 +537,12 @@ function ProductCard({
           className="mt-3.5 flex items-center justify-between gap-2 border-t border-line/60 pt-3"
           onClick={(e) => e.stopPropagation()}
         >
-          {!hasVariants && (
-            <button
-              onClick={onSetStock}
-              aria-label={`Set stock for ${product.name}`}
-              title="Quick adjust stock quantity"
-              className="group/stock flex h-9.5 items-center gap-2 rounded-xl border border-line-strong bg-surface px-3 text-ink-3 transition-all hover:border-accent hover:bg-surface-2 hover:text-ink active:scale-95"
-            >
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-3">Stock</span>
-              <span className="min-w-5 text-center text-[13.5px] font-bold tabular-nums text-ink">
-                {product.quantity}
-              </span>
-              <Pencil size={12} className="text-ink-3 transition-colors group-hover/stock:text-accent" />
-            </button>
-          )}
           <Button
             size="sm"
             variant="primary"
             onClick={onSell}
             disabled={out}
-            className={cx("h-9.5", hasVariants ? "w-full" : "px-5")}
+            className="h-9.5 w-full"
           >
             <ShoppingCart size={14} />
             Sell

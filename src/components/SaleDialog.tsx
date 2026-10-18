@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, BookmarkPlus, Check, KeyRound, Receipt, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { AlertCircle, AlertTriangle, Check, KeyRound, Receipt, Trash2 } from "lucide-react";
 import { api } from "../../convex/_generated/api";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
 import {
@@ -16,7 +16,7 @@ import {
 } from "./ui";
 import { ProductPicker } from "./ProductPicker";
 import { CustomerPicker, type SavedCustomer } from "./CustomerPicker";
-import { customerKey, variantAvailable } from "../../convex/shared";
+import { ContactAvatar } from "./ContactAvatar";
 import { useSettings } from "../lib/settings";
 import { useT } from "../lib/i18n";
 import { CURRENCY_SYMBOL } from "../lib/format";
@@ -32,10 +32,8 @@ type Line = {
   unitCost: number;
   quantity: string;
   unitPrice: string;
-  /** The purchase lot this line sells out of; empty means the product's own cost. */
+  /** The lot this line sells out of — its stock, cost and price. */
   batchId: string;
-  /** Which size, for a product sold in variants; empty for a plain product. */
-  variantId: string;
 };
 
 type OpenLot = {
@@ -43,6 +41,7 @@ type OpenLot = {
   productId: Id<"products">;
   label: string;
   unitCost: number;
+  unitPrice?: number;
   remaining: number;
 };
 
@@ -51,10 +50,8 @@ let lineSeq = 0;
 /**
  * Records a sale: the customer, what they took, what they paid.
  *
- * One dialog for both shapes the shop actually has — a counter sale that is
- * over the moment it is written, and an order to be delivered later. They
- * differ by one field, not by being separate features, which is why there is
- * no separate "quick sell" any more.
+ * Sales are strictly recorded for existing customers. Picking a customer
+ * locks their identity to prevent accidental name drift.
  */
 export function SaleDialog({
   open,
@@ -74,6 +71,8 @@ export function SaleDialog({
   const openLots = (useAuthedQuery(api.profit.openLots) ?? []) as OpenLot[];
   const create = useAuthedMutation(api.orders.create);
 
+  const [selectedCustomer, setSelectedCustomer] = useState<SavedCustomer | null>(null);
+  const [customerQuery, setCustomerQuery] = useState("");
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
@@ -85,7 +84,6 @@ export function SaleDialog({
   const [paidNow, setPaidNow] = useState("");
   const [note, setNote] = useState("");
   const [override, setOverride] = useState("");
-  const [saveCustomer, setSaveCustomer] = useState(false);
   /*
     Completed by default: most sales are rung up after the goods have gone,
     and a default that leaves stock untouched is wrong far more often than it
@@ -96,6 +94,8 @@ export function SaleDialog({
 
   useEffect(() => {
     if (!open) return;
+    setSelectedCustomer(null);
+    setCustomerQuery("");
     setName("");
     setPhone("");
     setAddress("");
@@ -106,100 +106,50 @@ export function SaleDialog({
     setPaidNow("");
     setNote("");
     setOverride("");
-    setSaveCustomer(false);
     setCompleted(true);
     setLines(presetProduct ? [lineFor(presetProduct)] : []);
   }, [open, presetProduct]);
-
-  /*
-    Whether these details are already in the address book — decided by the
-    same function the server uses, not a second copy of the rule. A tick
-    offered for someone already saved, or withheld from someone who is not,
-    is visible to the shopkeeper immediately.
-  */
-  const known = useMemo(() => {
-    if (!name.trim()) return false;
-    const key = customerKey(name, phone);
-    return customers.some((c) => customerKey(c.name, c.phone) === key);
-  }, [customers, name, phone]);
-
-  function fillFrom(c: SavedCustomer) {
-    setName(c.name);
-    setPhone(c.phone ?? "");
-    setAddress(c.address ?? "");
-  }
 
   /** Lots of this product with stock left, oldest purchase first. */
   function lotsOf(productId: Id<"products">) {
     return openLots.filter((l) => l.productId === productId);
   }
 
-  function productOf(productId: Id<"products">) {
-    return products?.find((p) => p._id === productId);
-  }
-
   /**
-   * One sale line from a product, with its price and cost snapshotted. A
-   * product sold in sizes picks the first one by default — same reasoning
-   * as the lot below: not a guess to leave unstated, just a default that
-   * the row shows and a dropdown can change.
+   * One sale line from a product. Stock and prices live on lots, so a line
+   * sells out of one — the oldest with stock left, chosen for you because a
+   * shop sells what it bought first. It is only a default: the row says which
+   * lot it landed on, and a dropdown changes it (a size is a lot of its own).
    */
-  function lineFor(p: Doc<"products">): Line {
-    const variant = p.variants?.[0];
-    if (variant) {
-      return {
-        key: `l${lineSeq++}`,
-        productId: p._id,
-        productName: p.name,
-        unit: variant.label,
-        stock: variantAvailable(p, variant.id),
-        quantity: "1",
-        unitPrice: variant.sellPrice !== undefined ? String(variant.sellPrice) : "",
-        unitCost: variant.costPrice,
-        batchId: "",
-        variantId: variant.id,
-      };
-    }
-    /*
-      The oldest open lot is chosen for you. A shop sells what it bought
-      first, and making the common case a decision would mean picking a lot
-      forty times a day to say the obvious thing — but it is only a default,
-      and the row says which one it landed on.
-    */
-    const lot = openLots.filter((l) => l.productId === p._id)[0];
+  function lineFor(p: Doc<"products">, lot = lotsOf(p._id)[0]): Line {
     return {
       key: `l${lineSeq++}`,
       productId: p._id,
       productName: p.name,
       unit: p.unit ?? "পিস",
-      stock: p.quantity,
+      stock: lot ? lot.remaining : 0,
       quantity: "1",
-      /*
-        Only a real selling price is prefilled, and always the product's own
-        — never a lot's. Falling back to cost was silently guaranteeing zero
-        profit on every line; an empty box that asks for a number is far
-        better than a wrong one that looks filled.
-      */
-      unitPrice: p.sellPrice !== undefined ? String(p.sellPrice) : "",
+      unitPrice: lot?.unitPrice !== undefined ? String(lot.unitPrice) : "",
       unitCost: lot ? lot.unitCost : p.costPrice,
       batchId: lot ? (lot.id as string) : "",
-      variantId: "",
     };
   }
 
   function addProduct(p: Doc<"products">) {
     setLines((prev) => {
-      // Picking the same product twice bumps its quantity rather than
-      // creating a duplicate line the customer would have to reconcile.
-      const existing = prev.find((l) => l.productId === p._id);
-      if (existing) {
-        return prev.map((l) =>
-          l.key === existing.key
-            ? { ...l, quantity: String((Number(l.quantity) || 0) + 1) }
-            : l,
-        );
-      }
-      return [...prev, lineFor(p)];
+      /*
+        Picking a product that is already on the sale adds another line from
+        a lot not used yet — the 1 kg after the 500 gram, say, since a size
+        is a lot of its own. Only once every lot is on the sale does it bump
+        the quantity instead, rather than two lines claiming the same lot.
+      */
+      const existing = prev.filter((l) => l.productId === p._id);
+      if (existing.length === 0) return [...prev, lineFor(p)];
+      const unused = lotsOf(p._id).find((lot) => !existing.some((l) => l.batchId === lot.id));
+      if (unused) return [...prev, lineFor(p, unused)];
+      return prev.map((l) =>
+        l.key === existing[0].key ? { ...l, quantity: String((Number(l.quantity) || 0) + 1) } : l,
+      );
     });
   }
 
@@ -229,6 +179,7 @@ export function SaleDialog({
   // full total is Paid, so neither end of the range belongs to this one.
   const partialValid = payment !== "partial" || (paidNow !== "" && paidNowValue > 0 && paidNowValue < total);
   const valid =
+    Boolean(selectedCustomer) &&
     name.trim().length > 0 &&
     linesValid &&
     discountValue <= subtotal &&
@@ -238,19 +189,19 @@ export function SaleDialog({
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!valid) return;
+    if (!valid || !selectedCustomer) return;
     setSaving(true);
     try {
       await create({
-        customerName: name,
-        customerPhone: phone,
-        customerAddress: address,
+        customerId: selectedCustomer._id as Id<"customers">,
+        customerName: selectedCustomer.name,
+        customerPhone: phone.trim() || undefined,
+        customerAddress: address.trim() || undefined,
         items: parsed.map((l) => ({
           productId: l.productId,
           quantity: l.qty,
           unitPrice: l.price,
           batchId: l.batchId ? (l.batchId as Id<"stockBatches">) : undefined,
-          variantId: l.variantId || undefined,
         })),
         discount: discountValue,
         deliveryCharge: deliveryValue,
@@ -258,7 +209,6 @@ export function SaleDialog({
         paidAmount: payment === "partial" ? paidNowValue : undefined,
         note,
         overridePasscode: shortLines.length > 0 ? override : undefined,
-        saveCustomer,
         completed,
         source: "manual",
       });
@@ -274,6 +224,7 @@ export function SaleDialog({
 
   return (
     <Modal
+      guardChanges
       open={open}
       onClose={onClose}
       icon={<Receipt size={19} />}
@@ -285,71 +236,100 @@ export function SaleDialog({
         <div className="flex flex-col gap-6 px-6 py-6">
           <div className="flex flex-col gap-4">
             <SectionLabel>{t("orders.customer")}</SectionLabel>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field label={t("orders.customerName")}>
-                {() => (
-                  <CustomerPicker
-                    value={name}
-                    onChange={setName}
-                    onPick={fillFrom}
-                    customers={customers}
-                  />
-                )}
-              </Field>
-              <Field label={t("orders.phone")}>
-                {(id) => (
-                  <Input
-                    id={id}
-                    value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
-                    placeholder="01712-345678"
-                    autoComplete="off"
-                    inputMode="tel"
-                  />
-                )}
-              </Field>
-            </div>
-            <Field label={t("orders.address")}>
-              {(id) => (
-                <Textarea
-                  id={id}
-                  rows={2}
-                  value={address}
-                  onChange={(e) => setAddress(e.target.value)}
-                  placeholder="১২/ক, মিরপুর রোড, ঢাকা"
-                />
-              )}
-            </Field>
 
-            {/*
-              Offered only for someone not already saved. A tick that does
-              nothing is one people stop reading, including on the orders
-              where it would have mattered.
-            */}
-            {name.trim() !== "" && !known && (
-              <label className="ac-fade-in flex cursor-pointer items-start gap-3 rounded-xl border border-line-strong bg-page px-3.5 py-3">
-                <input
-                  type="checkbox"
-                  checked={saveCustomer}
-                  onChange={(e) => setSaveCustomer(e.target.checked)}
-                  className="mt-0.5 size-4 accent-[var(--accent)]"
-                />
-                <span className="min-w-0">
-                  <span className="flex items-center gap-1.5 text-[13.5px] font-semibold text-ink">
-                    <BookmarkPlus size={15} className="text-accent" aria-hidden />
-                    {t("orders.saveCustomer")}
-                  </span>
-                  <span className="mt-0.5 block text-[12px] leading-4.5 text-ink-3">
-                    {t("orders.saveCustomerHint")}
-                  </span>
-                </span>
-              </label>
-            )}
-            {name.trim() !== "" && known && (
-              <p className="ac-fade-in flex items-center gap-1.5 text-[12px] font-semibold text-good-ink">
-                <Check size={14} aria-hidden />
-                {t("orders.customerSaved")}
-              </p>
+            {selectedCustomer ? (
+              <div className="flex flex-col gap-3 rounded-2xl border border-line-strong bg-page p-3.5 shadow-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <ContactAvatar
+                      name={selectedCustomer.name}
+                      photoUrl={selectedCustomer.photoUrl}
+                      size="md"
+                      shape="circle"
+                    />
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-[15px] font-bold text-ink">
+                          {selectedCustomer.name}
+                        </span>
+                        <span className="inline-flex items-center gap-1 rounded-full bg-good/10 px-2 py-0.5 text-[11px] font-semibold text-good-ink">
+                          <Check size={12} />
+                          {t("orders.customerSaved")}
+                        </span>
+                      </div>
+                      <p className="mt-0.5 truncate text-[12px] text-ink-3">
+                        {[phone || selectedCustomer.phone, address || selectedCustomer.address]
+                          .filter(Boolean)
+                          .join(" · ") || t("orders.noDetails")}
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="shrink-0 text-[12.5px] font-semibold text-ink-2 hover:text-ink hover:bg-surface-2"
+                    onClick={() => {
+                      setSelectedCustomer(null);
+                      setName("");
+                      setPhone("");
+                      setAddress("");
+                      setCustomerQuery("");
+                    }}
+                  >
+                    {t("orders.changeCustomer")}
+                  </Button>
+                </div>
+
+                <div className="grid gap-3 pt-2.5 border-t border-line sm:grid-cols-2">
+                  <Field label={t("orders.phone")}>
+                    {(id) => (
+                      <Input
+                        id={id}
+                        value={phone}
+                        onChange={(e) => setPhone(e.target.value)}
+                        placeholder="01712-345678"
+                        autoComplete="off"
+                        inputMode="tel"
+                      />
+                    )}
+                  </Field>
+                  <Field label={t("orders.address")}>
+                    {(id) => (
+                      <Textarea
+                        id={id}
+                        rows={1}
+                        value={address}
+                        onChange={(e) => setAddress(e.target.value)}
+                        placeholder="১২/ক, মিরপুর রোড, ঢাকা"
+                      />
+                    )}
+                  </Field>
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                <Field label={t("orders.customer")}>
+                  {() => (
+                    <CustomerPicker
+                      value={customerQuery}
+                      onChange={setCustomerQuery}
+                      onPick={(c) => {
+                        setSelectedCustomer(c);
+                        setName(c.name);
+                        setPhone(c.phone ?? "");
+                        setAddress(c.address ?? "");
+                        setCustomerQuery("");
+                      }}
+                      customers={customers}
+                    />
+                  )}
+                </Field>
+                <p className="flex items-center gap-1.5 text-[12px] text-ink-3">
+                  <AlertCircle size={14} className="text-accent shrink-0" />
+                  <span>{t("orders.selectCustomerNotice")}</span>
+                </p>
+              </div>
             )}
           </div>
 
@@ -399,53 +379,7 @@ export function SaleDialog({
                         </button>
                       </div>
 
-                      {/*
-                        Which size this line is. Lots are a purchase-side
-                        idea and sizes a selling-side one, so a product with
-                        sizes picks from these instead of a lot — picking
-                        both would leave two different costs claiming the
-                        same line.
-                      */}
-                      {productOf(line.productId)?.variants?.length ? (
-                        <label className="mt-2.5 block">
-                          <span className="mb-1 block text-[11px] font-semibold text-ink-3">
-                            {t("products.variantLabel")}
-                          </span>
-                          <Select
-                            value={line.variantId}
-                            onChange={(e) => {
-                              const product = productOf(line.productId);
-                              const picked = product?.variants?.find((v) => v.id === e.target.value);
-                              setLines((p) =>
-                                p.map((l) =>
-                                  l.key === line.key && picked && product
-                                    ? {
-                                        ...l,
-                                        variantId: picked.id,
-                                        unit: picked.label,
-                                        stock: variantAvailable(product, picked.id),
-                                        unitCost: picked.costPrice,
-                                        // The asking price only fills a blank,
-                                        // so a price already typed stands.
-                                        unitPrice:
-                                          l.unitPrice === "" && picked.sellPrice !== undefined
-                                            ? String(picked.sellPrice)
-                                            : l.unitPrice,
-                                      }
-                                    : l,
-                                ),
-                              );
-                            }}
-                          >
-                            {productOf(line.productId)?.variants?.map((v) => (
-                              <option key={v.id} value={v.id}>
-                                {v.label} · {fmt(v.costPrice)}
-                              </option>
-                            ))}
-                          </Select>
-                        </label>
-                      ) : (
-                        lotsOf(line.productId).length > 0 && (
+                      {lotsOf(line.productId).length > 0 && (
                         <label className="mt-2.5 block">
                           <span className="mb-1 block text-[11px] font-semibold text-ink-3">
                             {t("orders.sellFromLot")}
@@ -454,22 +388,18 @@ export function SaleDialog({
                             value={line.batchId}
                             onChange={(e) => {
                               const picked = openLots.find((l) => l.id === e.target.value);
-                              const product = productOf(line.productId);
+                              if (!picked) return;
+                              // Stock, cost and price all follow the lot.
                               setLines((p) =>
                                 p.map((l) =>
                                   l.key === line.key
                                     ? {
                                         ...l,
-                                        batchId: e.target.value,
-                                        // The cost always follows the lot; the
-                                        // asking price only fills a blank, and
-                                        // always from the product's own price,
-                                        // so a price already typed stands.
-                                        unitCost: picked ? picked.unitCost : l.unitCost,
+                                        batchId: picked.id,
+                                        stock: picked.remaining,
+                                        unitCost: picked.unitCost,
                                         unitPrice:
-                                          l.unitPrice === "" && product?.sellPrice !== undefined
-                                            ? String(product.sellPrice)
-                                            : l.unitPrice,
+                                          picked.unitPrice !== undefined ? String(picked.unitPrice) : l.unitPrice,
                                       }
                                     : l,
                                 ),
@@ -478,13 +408,12 @@ export function SaleDialog({
                           >
                             {lotsOf(line.productId).map((l) => (
                               <option key={l.id} value={l.id}>
-                                {fmt(l.unitCost)} · {fmtNum(l.remaining)} {line.unit} · {l.label}
+                                {l.label} · {fmtNum(l.remaining)} {line.unit}
+                                {l.unitPrice !== undefined ? ` · ${fmt(l.unitPrice)}` : ""}
                               </option>
                             ))}
-                            <option value="">{t("orders.noLot")}</option>
                           </Select>
                         </label>
-                        )
                       )}
 
                       <div className="mt-2.5 flex flex-wrap items-end gap-3">

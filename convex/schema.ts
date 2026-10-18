@@ -206,17 +206,15 @@ export default defineSchema({
     remaining: v.optional(v.number()),
     unitCost: v.number(),
     /*
-      Legacy only — lots no longer collect a sell price of their own (it
-      silently overrode the product's price at the point of sale). Kept
-      optional so old records still read; `profit:clearLotSellPrices` wipes
-      it from existing rows, and nothing writes it again.
+      What one unit of this lot sells for. Every lot has one — a product has
+      no price of its own any more (see stock.ts). Optional only for lots
+      recorded before that, until `migrations:lotsOnly` fills them in.
     */
     unitPrice: v.optional(v.number()),
     note: v.optional(v.string()),
     /*
-      Which size this lot restocks, for a product that sells in sizes — set
-      once at creation and never changed, the same way the product itself is
-      locked once a lot exists. Absent for a plain product with no variants.
+      Legacy: which product size this lot restocked, from when sizes lived
+      on the product. A size is now just a lot of its own, named after it.
     */
     variantId: v.optional(v.string()),
     variantLabel: v.optional(v.string()),
@@ -236,28 +234,66 @@ export default defineSchema({
       Investment counter, so removing one later knows to move it back.
     */
     investment: v.optional(v.boolean()),
+    /*
+      How much of this lot's cost has been paid to the vendor. Absent means
+      fully paid — every lot recorded before this was tracked, and any lot
+      with no vendor. The rest is what the shop still owes them.
+    */
+    vendorPaid: v.optional(v.number()),
+    /*
+      Set when the lot was taken off its product without being deleted —
+      spoiled or lost stock. It stays in the vendor's purchase history; what
+      was left in it (`writtenOff` units) was booked as a cost on that day.
+    */
+    removedAt: v.optional(v.number()),
+    writtenOff: v.optional(v.number()),
   })
     .index("by_purchasedAt", ["purchasedAt"])
     .index("by_product", ["productId"])
     .index("by_vendor", ["vendorId"]),
 
   /*
+    The categories vendors are filed under — the shop's own list, added to,
+    renamed and removed from the Vendors page. `key` marks the five it
+    started with, so vendors filed under the old fixed set find theirs.
+  */
+  vendorCategories: defineTable({
+    name: v.string(),
+    /** Shown instead of `name` in Bangla, when there is one. */
+    nameBn: v.optional(v.string()),
+    key: v.optional(v.string()),
+    /** Parent category for hierarchical sub-categories */
+    parentId: v.optional(v.id("vendorCategories")),
+    order: v.number(),
+    createdAt: v.number(),
+  })
+    .index("by_order", ["order"])
+    .index("by_parent", ["parentId"]),
+
+  /*
     A supplier — who the shop buys stock from, as distinct from `customers`,
-    who buy from the shop. `category` is a fixed set rather than free text
-    like a product's category: there are only a handful of real supplier
-    roles in this business, and a fixed set is what makes the Vendors page
-    worth filtering by.
+    who buy from the shop. Filed under one of `vendorCategories`, which is
+    what makes the Vendors page worth filtering by.
   */
   vendors: defineTable({
     name: v.string(),
     /** The vendor's profile picture, stored in Convex file storage. */
     photoId: v.optional(v.id("_storage")),
-    category: v.union(
-      v.literal("spawn"),
-      v.literal("materials"),
-      v.literal("equipment"),
-      v.literal("packaging"),
-      v.literal("other"),
+    /** Absent when uncategorised — including after its category was deleted. */
+    categoryId: v.optional(v.id("vendorCategories")),
+    subCategoryId: v.optional(v.id("vendorCategories")),
+    /*
+      Legacy: the old fixed category, before categories could be edited.
+      `migrations:vendorCategories` moves it to `categoryId`.
+    */
+    category: v.optional(
+      v.union(
+        v.literal("spawn"),
+        v.literal("materials"),
+        v.literal("equipment"),
+        v.literal("packaging"),
+        v.literal("other"),
+      ),
     ),
     phone: v.optional(v.string()),
     /** Further numbers beyond the main one — a vendor is often reachable on more than one line. */
@@ -271,7 +307,7 @@ export default defineSchema({
     note: v.optional(v.string()),
     createdAt: v.number(),
   })
-    .index("by_category", ["category"])
+    .index("by_categoryId", ["categoryId"])
     .index("by_createdAt", ["createdAt"]),
 
   /*
@@ -422,16 +458,29 @@ export default defineSchema({
     .index("by_key", ["key"])
     .index("by_orders", ["orderCount"]),
 
+  productCategories: defineTable({
+    name: v.string(),
+    nameBn: v.optional(v.string()),
+    key: v.optional(v.string()),
+    /** Parent category for hierarchical sub-categories */
+    parentId: v.optional(v.id("productCategories")),
+    order: v.number(),
+    createdAt: v.number(),
+  })
+    .index("by_order", ["order"])
+    .index("by_parent", ["parentId"]),
+
   products: defineTable({
     name: v.string(),
     /** The product's photo, stored in Convex file storage. */
     photoId: v.optional(v.id("_storage")),
-    // What it costs you to acquire one unit.
-    costPrice: v.number(),
     /*
-      Default selling price, so picking a product on an order fills the price
-      in. Optional because products created before orders existed have none.
+      Kept in step with the product's lots by `syncProduct` (stock.ts) — the
+      cheapest buy and sell price among lots with stock left — and never set
+      by hand. The lots are the truth; these are for screens that only need
+      one figure.
     */
+    costPrice: v.number(),
     sellPrice: v.optional(v.number()),
     /*
       What a "unit" means for this product — পিস, কেজি, গ্রাম, লিটার. Without
@@ -441,17 +490,17 @@ export default defineSchema({
     tags: v.optional(v.array(v.string())),
     details: v.string(),
     category: v.optional(v.string()),
-    // Units currently on hand.
+    subCategory: v.optional(v.string()),
+    categoryId: v.optional(v.id("productCategories")),
+    subCategoryId: v.optional(v.id("productCategories")),
+    // Units currently on hand: what is left across all lots (see stock.ts).
     quantity: v.number(),
     /** Per-product low-stock threshold; falls back to a global default. */
     reorderLevel: v.optional(v.number()),
     /*
-      Size/package options for one product — "500 gram" at one price, "1 kg"
-      at another — each with its own buy and sell price. Absent for an
-      ordinary single-price product, which is most of them; `costPrice`,
-      `sellPrice` and `quantity` above keep meaning what they always have.
-      When present, those three fields mirror what the variants add up to
-      (see products.ts) so every other screen keeps reading from one place.
+      Legacy: sizes used to live on the product. Each size is now a lot of its
+      own, with its own prices, and `migrations:lotsOnly` clears these two.
+      Kept optional only so the rows still validate until it has run.
     */
     variants: v.optional(
       v.array(
@@ -468,11 +517,6 @@ export default defineSchema({
         }),
       ),
     ),
-    /*
-      "separate": each variant is its own countable stock (pre-packed sizes).
-      "shared": one pooled `quantity` in the base unit, each variant just a
-      priced slice of it. Meaningless without `variants`.
-    */
     stockMode: v.optional(v.union(v.literal("separate"), v.literal("shared"))),
     archived: v.boolean(),
     createdAt: v.number(),
@@ -531,8 +575,149 @@ export default defineSchema({
     note: v.optional(v.string()),
     /** Set the first time a certificate is generated for this trainee. */
     certificateIssuedAt: v.optional(v.number()),
+    /*
+      The trainee's own login, handed to them at the office — there is no
+      sign-up. Lowercased; the password is stored only as a PBKDF2 hash
+      (see auth.ts), and both are absent until the shop sets them.
+    */
+    username: v.optional(v.string()),
+    passwordHash: v.optional(v.string()),
+    passwordSalt: v.optional(v.string()),
+    /*
+      A note for this trainee alone, shown in their portal — kept apart
+      from `note`, which is the shop's private note and never leaves it.
+    */
+    portalNote: v.optional(v.string()),
+    portalNoteUpdatedAt: v.optional(v.number()),
+    /** Wrong passwords in a row, and when a run of them locks the login. */
+    loginFailures: v.optional(v.number()),
+    lockedUntil: v.optional(v.number()),
     createdAt: v.number(),
-  }).index("by_createdAt", ["createdAt"]),
+  })
+    .index("by_createdAt", ["createdAt"])
+    .index("by_username", ["username"]),
+
+  /*
+    A trainee's signed-in session — kept apart from `sessions`, the owner's,
+    so a trainee's token can never pass `requireSession` and reach anything
+    but their own courses.
+  */
+  traineeSessions: defineTable({
+    traineeId: v.id("trainees"),
+    tokenHash: v.string(),
+    createdAt: v.number(),
+    expiresAt: v.number(),
+  })
+    .index("by_tokenHash", ["tokenHash"])
+    .index("by_trainee", ["traineeId"]),
+
+  /*
+    Small settings kept by name. "traineeNote" is the note every trainee
+    sees in their portal.
+  */
+  appSettings: defineTable({
+    key: v.string(),
+    text: v.optional(v.string()),
+    updatedAt: v.number(),
+  }).index("by_key", ["key"]),
+
+  /* A course the shop teaches — lessons in order, assigned to trainees. */
+  courses: defineTable({
+    name: v.string(),
+    description: v.optional(v.string()),
+    order: v.number(),
+    createdAt: v.number(),
+  }).index("by_order", ["order"]),
+
+  courseLessons: defineTable({
+    courseId: v.id("courses"),
+    title: v.string(),
+    /** Plain text, shown as written. */
+    body: v.optional(v.string()),
+    /** A YouTube link, embedded on the lesson. */
+    videoUrl: v.optional(v.string()),
+    files: v.optional(
+      v.array(
+        v.object({
+          storageId: v.id("_storage"),
+          fileName: v.string(),
+          kind: v.union(v.literal("image"), v.literal("pdf")),
+        }),
+      ),
+    ),
+    order: v.number(),
+    createdAt: v.number(),
+  }).index("by_course", ["courseId"]),
+
+  /*
+    A course assigned to a trainee. The certificate for it is the shop's to
+    approve once every lesson is done; only then can the trainee download it.
+  */
+  enrollments: defineTable({
+    traineeId: v.id("trainees"),
+    courseId: v.id("courses"),
+    assignedAt: v.number(),
+    certificateApprovedAt: v.optional(v.number()),
+    /*
+      A final exam or practical, marked by the shop outside the app. Counts
+      toward the course score alongside the assignments; absent if there was
+      none.
+    */
+    finalMarks: v.optional(v.number()),
+    finalMax: v.optional(v.number()),
+  })
+    .index("by_trainee", ["traineeId"])
+    .index("by_course", ["courseId"]),
+
+  /*
+    Work a course sets — the trainee hands it in from the portal (a YouTube
+    link to their own video, a note, photos or PDFs) and the shop marks it
+    out of `maxMarks`. Trainees only ever see the grade, never the number.
+  */
+  assignments: defineTable({
+    courseId: v.id("courses"),
+    title: v.string(),
+    instructions: v.optional(v.string()),
+    maxMarks: v.number(),
+    dueAt: v.optional(v.number()),
+    order: v.number(),
+    createdAt: v.number(),
+  }).index("by_course", ["courseId"]),
+
+  submissions: defineTable({
+    assignmentId: v.id("assignments"),
+    courseId: v.id("courses"),
+    traineeId: v.id("trainees"),
+    videoUrl: v.optional(v.string()),
+    note: v.optional(v.string()),
+    files: v.optional(
+      v.array(
+        v.object({
+          storageId: v.id("_storage"),
+          fileName: v.string(),
+          kind: v.union(v.literal("image"), v.literal("pdf")),
+        }),
+      ),
+    ),
+    submittedAt: v.number(),
+    /** Set by the shop; the trainee sees only the grade it makes. */
+    marks: v.optional(v.number()),
+    feedback: v.optional(v.string()),
+    gradedAt: v.optional(v.number()),
+  })
+    .index("by_trainee", ["traineeId"])
+    .index("by_assignment", ["assignmentId"]),
+
+  /** One lesson a trainee has finished. Its absence means not done yet. */
+  lessonProgress: defineTable({
+    traineeId: v.id("trainees"),
+    courseId: v.id("courses"),
+    lessonId: v.id("courseLessons"),
+    completedAt: v.number(),
+  })
+    .index("by_trainee", ["traineeId"])
+    .index("by_trainee_lesson", ["traineeId", "lessonId"])
+    .index("by_lesson", ["lessonId"]),
 
   /*
     One lesson allocated to one trainee. Per-trainee rather than a shared

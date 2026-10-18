@@ -5,24 +5,21 @@ import {
   Layers,
   Pencil,
   PieChart,
-  Plus,
   Trash2,
   TrendingUp,
   Wallet,
 } from "lucide-react";
 import { api } from "../../convex/_generated/api";
-import { Badge, Button, Card, CardHeader, EmptyState, cx } from "../components/ui";
+import { Badge, Card, CardHeader, EmptyState, cx } from "../components/ui";
 import { StatTile } from "../components/StatTile";
 import { AnimatedNumber } from "../components/AnimatedNumber";
 import { BatchDialog, type BatchRow } from "../components/BatchDialog";
 import { DateRangeControls, rangeLabel, useDateRange } from "../components/DateRange";
-import { PasscodeConfirmDialog } from "../components/PasscodeConfirmDialog";
+import { LotRemoveDialog } from "../components/LotRemoveDialog";
 import { useSettings } from "../lib/settings";
 import { useT, type MessageKey } from "../lib/i18n";
 import { gradientFor, initialOf } from "../lib/avatar";
-import { plural } from "../lib/format";
-import { useToast } from "../lib/toast";
-import { useAuthedMutation, useAuthedQuery } from "../lib/session";
+import { useAuthedQuery } from "../lib/session";
 
 /** One bucket's share of an amount. Percentages already total 100. */
 function share(amount: number, pct: number) {
@@ -41,13 +38,10 @@ type Basis = "projected" | "realised";
 export function ProfitPage() {
   const { fmt, fmtNum, fmtPercent, fmtDateFull } = useSettings();
   const t = useT();
-  const toast = useToast();
   const data = useAuthedQuery(api.profit.summary);
-  const removeBatch = useAuthedMutation(api.profit.removeBatch);
 
   const [basis, setBasis] = useState<Basis>("projected");
   const range = useDateRange(0, "ac.range.profit");
-  const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<BatchRow | null>(null);
   const [deleting, setDeleting] = useState<BatchRow | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -155,10 +149,6 @@ export function ProfitPage() {
           </h1>
           <p className="mt-1 text-[13.5px] text-ink-3 sm:text-[14px]">{t("profit.subtitle")}</p>
         </div>
-        <Button variant="primary" onClick={() => setAddOpen(true)} className="w-full sm:w-auto">
-          <Plus size={17} />
-          {t("profit.addLot")}
-        </Button>
       </div>
 
       {!empty && (
@@ -176,13 +166,7 @@ export function ProfitPage() {
           <EmptyState
             icon={<Layers size={24} />}
             title={t("profit.noLots")}
-            body="Add a lot with its quantity, buy price and sell price. Profit is worked out for you and divided across your categories."
-            action={
-              <Button variant="primary" onClick={() => setAddOpen(true)}>
-                <Plus size={17} />
-                {t("profit.addLot")}
-              </Button>
-            }
+            body="Stock lots and inventory are purchased and managed via the Vendors section."
           />
         </Card>
       ) : (
@@ -343,23 +327,8 @@ export function ProfitPage() {
         </>
       )}
 
-      <BatchDialog open={addOpen} onClose={() => setAddOpen(false)} />
       <BatchDialog open={editing !== null} onClose={() => setEditing(null)} batch={editing} />
-      <PasscodeConfirmDialog
-        open={deleting !== null}
-        onClose={() => setDeleting(null)}
-        title="Delete this stock lot?"
-        body={
-          deleting
-            ? `${deleting.label} of ${deleting.productName}\n${plural(deleting.remaining ?? deleting.quantity, "unit")} still in it come off your stock, and the whole lot off your projected profit.`
-            : ""
-        }
-        onConfirm={async (passcode) => {
-          if (!deleting) return;
-          await removeBatch({ id: deleting.id as never, passcode });
-          toast.ok("Stock lot deleted.");
-        }}
-      />
+      <LotRemoveDialog lot={deleting} onClose={() => setDeleting(null)} />
     </div>
   );
 }

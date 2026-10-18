@@ -2,14 +2,16 @@ import {
   useEffect,
   useId,
   useRef,
+  useState,
   type ButtonHTMLAttributes,
   type ComponentProps,
+  type HTMLAttributes,
   type InputHTMLAttributes,
   type ReactNode,
   type SelectHTMLAttributes,
-  type TextareaHTMLAttributes,
 } from "react";
 import { createPortal } from "react-dom";
+import { useT } from "../lib/i18n";
 import { ChevronDown, Minus, Plus, X } from "lucide-react";
 
 export function cx(...parts: (string | false | null | undefined)[]) {
@@ -164,7 +166,7 @@ export function Input({ className, ...rest }: ComponentProps<"input">) {
   return <input {...rest} className={cx(CONTROL, "h-11", className)} />;
 }
 
-export function Textarea({ className, ...rest }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+export function Textarea({ className, ...rest }: ComponentProps<"textarea">) {
   return <textarea {...rest} className={cx(CONTROL, "resize-y py-3 leading-6", className)} />;
 }
 
@@ -271,26 +273,45 @@ export function AmountInput({
 
 /* ----------------------------------------------------------------- Badge */
 
-const BADGE_TONES: Record<string, string> = {
+export const BADGE_TONES = {
   neutral: "bg-surface-2 text-ink-2",
   good: "bg-good-soft text-good-ink",
   warning: "bg-warning-soft text-warning-ink",
   critical: "bg-critical-soft text-critical-ink",
   accent: "bg-accent-soft text-accent",
+} as const;
+
+export type BadgeTone = keyof typeof BADGE_TONES;
+export type BadgeSize = "xs" | "sm" | "md";
+
+const BADGE_SIZES: Record<BadgeSize, string> = {
+  xs: "text-[10px] py-0.5 px-1.5 rounded-md gap-1",
+  sm: "text-[11.5px] py-0.5 px-2 rounded-lg gap-1",
+  md: "text-[12.5px] py-1 px-2.5 rounded-lg gap-1.5",
 };
+
+export interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
+  tone?: BadgeTone;
+  size?: BadgeSize;
+  className?: string;
+  children: ReactNode;
+}
 
 export function Badge({
   tone = "neutral",
+  size = "sm",
+  className,
   children,
-}: {
-  tone?: keyof typeof BADGE_TONES;
-  children: ReactNode;
-}) {
+  ...rest
+}: BadgeProps) {
   return (
     <span
+      {...rest}
       className={cx(
-        "inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[11.5px] font-semibold whitespace-nowrap",
-        BADGE_TONES[tone],
+        "inline-flex shrink-0 items-center font-semibold whitespace-nowrap",
+        BADGE_SIZES[size],
+        BADGE_TONES[tone] ?? BADGE_TONES.neutral,
+        className,
       )}
     >
       {children}
@@ -307,6 +328,9 @@ export function Badge({
 */
 const OPEN_MODALS: object[] = [];
 
+/** How long a dialog's side panel takes to slide in or out — matches `duration-[800ms]` below. */
+const ASIDE_MS = 800;
+
 export function Modal({
   open,
   onClose,
@@ -317,11 +341,18 @@ export function Modal({
   gradient = "var(--grad-violet)",
   children,
   width = "sm:max-w-xl",
+  headerActions,
+  asideLeft,
+  aside,
+  detail,
+  stacked,
+  onBack,
+  guardChanges = false,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
-  subtitle?: string;
+  subtitle?: ReactNode;
   /** Anchors the header — a dialog with no visual subject reads as a form dump. */
   icon?: ReactNode;
   /** True when `icon` is its own control (e.g. a photo upload button) rather than decoration — keeps it out of the accessibility tree otherwise, same as a background image. */
@@ -329,8 +360,76 @@ export function Modal({
   gradient?: string;
   children: ReactNode;
   width?: string;
+  headerActions?: ReactNode;
+  /*
+    A left-side sliding panel, mirroring how `aside` works on the right.
+  */
+  asideLeft?: ReactNode;
+  /*
+    A second panel opened from inside the dialog. On a wide screen it grows in
+    beside the dialog, which glides left to make room; on anything narrower it
+    slides in over the dialog, and is expected to carry its own back control.
+  */
+  aside?: ReactNode;
+  /*
+    A third panel, opened from the side panel. On a wide screen the dialog
+    slides out to the left and vanishes, the side panel takes its place, and
+    this comes in on the right — closing it plays that backwards. On a narrow
+    screen it slides in over everything, like the side panel does.
+  */
+  detail?: ReactNode;
+  /*
+    A page opened on top of the dialog: it rises from below into focus while
+    the dialog sinks, shrinks and dims behind it — still there, just not the
+    point. Closing it plays that backwards.
+  */
+  stacked?: ReactNode;
+  /*
+    Steps back one layer — closes whichever of `aside`, `asideLeft`, `detail` or `stacked`
+    is on top. While one is open, a click outside the panels or Escape calls
+    this instead of closing the whole dialog, so each one backs out a step.
+  */
+  onBack?: () => void;
+  /*
+    For a form: once anything has been typed or picked in it, closing by a
+    click outside, Escape or the X asks "discard changes?" first. Saving
+    still closes it directly — the form calls `onClose` itself for that.
+  */
+  guardChanges?: boolean;
 }) {
+  const t = useT();
   const panelRef = useRef<HTMLDivElement>(null);
+  /** Identity for the stack below; the object itself is never read. */
+  const idRef = useRef({});
+
+  const leftSide = useSlidePanel(asideLeft);
+  const side = useSlidePanel(aside);
+  const detailPanel = useSlidePanel(detail);
+  const stack = useSlidePanel(stacked);
+
+  const rootRef = useRef<HTMLDivElement>(null);
+  /** Set by the first edit inside the dialog; cleared each time it opens. */
+  const dirtyRef = useRef(false);
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
+  /** Where the current click began — a drag that starts inside a panel and ends outside it is not a click outside. */
+  const downOutsideRef = useRef(false);
+  useEffect(() => {
+    if (open) {
+      dirtyRef.current = false;
+      setConfirmingDiscard(false);
+    }
+  }, [open]);
+
+  /** Closes the dialog, unless that would throw away an edit — then asks first. */
+  const requestClose = () => {
+    if (guardChanges && dirtyRef.current) setConfirmingDiscard(true);
+    else onClose();
+  };
+  /** One step back: the top side panel if one is open, else the dialog itself. */
+  const dismiss = () => {
+    if ((aside || asideLeft || detail || stacked) && onBack) onBack();
+    else requestClose();
+  };
   /*
     Held in a ref so the effect below keys on `open` alone. Callers pass an
     inline arrow for `onClose`, which is a fresh function on every render of
@@ -339,10 +438,28 @@ export function Modal({
     a lot on the Products page re-rendered it on every query update, so typing
     into a dialog kept losing the caret to the panel behind it.
   */
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-  /** Identity for the stack below; the object itself is never read. */
-  const idRef = useRef({});
+  const dismissRef = useRef(dismiss);
+  dismissRef.current = dismiss;
+
+  /** Which panel is in focus — the one a click anywhere else steps back from. */
+  const topLayer = detail ? "detail" : stacked ? "stacked" : aside ? "aside" : asideLeft ? "asideLeft" : "main";
+  /**
+   * True when the event's DOM target is in a panel of this dialog that is
+   * not the one in focus — the profile beside an open dashboard, say.
+   */
+  const isBehindPanel = (target: EventTarget | null) => {
+    const root = rootRef.current;
+    if (topLayer === "main" || !root || !(target instanceof Element) || !root.contains(target)) return false;
+    const layer = target.closest("[data-modal-layer]")?.getAttribute("data-modal-layer");
+    return Boolean(layer && layer !== topLayer && target.closest("[data-modal-panel]"));
+  };
+
+  /** True when the event's DOM target sits inside this dialog's own markup, outside every panel. */
+  const isOutsidePanels = (target: EventTarget | null) => {
+    const root = rootRef.current;
+    if (!root || !(target instanceof Node) || !root.contains(target)) return false;
+    return !(target instanceof Element && target.closest("[data-modal-panel]"));
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -355,7 +472,7 @@ export function Modal({
       // Only the dialog on top answers. Otherwise one press dismisses the
       // sheet and the dialog it was opened from, together.
       if (OPEN_MODALS[OPEN_MODALS.length - 1] !== id) return;
-      closeRef.current();
+      dismissRef.current();
     };
     document.addEventListener("keydown", onKey);
 
@@ -408,10 +525,58 @@ export function Modal({
     element instead of the viewport.
   */
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-4 sm:p-6">
-      <div className="ac-fade-in fixed inset-0 bg-scrim" onClick={onClose} />
+    <div
+      ref={rootRef}
+      className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-4 sm:p-6"
+      /*
+        Anywhere that is not a panel is the backdrop — including the empty
+        layout boxes around the panels, which cover the whole screen. The DOM
+        check matters: React bubbles events out of a dialog opened from inside
+        this one (a passcode prompt, say), and those are not clicks here.
+      */
+      onMouseDown={(e) => {
+        downOutsideRef.current = isOutsidePanels(e.target);
+      }}
+      /*
+        A click on a panel behind the one in focus steps back, like a click
+        outside — and does only that, so it can't also press whatever button
+        it landed on in the panel behind.
+      */
+      onClickCapture={(e) => {
+        if (!isBehindPanel(e.target)) return;
+        e.stopPropagation();
+        e.preventDefault();
+        dismiss();
+      }}
+      onClick={(e) => {
+        if (downOutsideRef.current && isOutsidePanels(e.target)) dismiss();
+        downOutsideRef.current = false;
+      }}
+      onInput={(e) => {
+        if (rootRef.current?.contains(e.target as Node)) dirtyRef.current = true;
+      }}
+    >
+      <div className="ac-fade-in fixed inset-0 bg-scrim" />
+      <div className="relative flex h-full max-h-full w-full items-center justify-center">
+      <SlidePanel panel={leftSide} layer="z-10" name="asideLeft" position="left" />
+      {/* Collapses on a wide screen to make way for `detail`, clipping from the left. */}
+      <div
+        className={cx(
+          "flex h-full max-h-full w-full items-center justify-center",
+          (side.mounted || leftSide.mounted) && "xl:w-auto xl:flex-none",
+          detailPanel.mounted &&
+            "xl:justify-end xl:overflow-hidden transition-[max-width,opacity] duration-[800ms] ease-[cubic-bezier(0.4,0,0.2,1)]",
+          detailPanel.mounted && (detailPanel.shown ? "xl:max-w-0 xl:opacity-0" : "xl:max-w-[42rem]"),
+          stack.mounted &&
+            "origin-top transition-[translate,scale,opacity,filter] duration-[800ms] ease-[cubic-bezier(0.4,0,0.2,1)]",
+          stack.shown && "pointer-events-none translate-y-[22vh] scale-[0.9] opacity-45 blur-[1px]",
+        )}
+        aria-hidden={detailPanel.shown || stack.shown || undefined}
+      >
       <div
         ref={panelRef}
+        data-modal-panel
+        data-modal-layer="main"
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -419,6 +584,9 @@ export function Modal({
           "ac-pop-in relative flex max-h-full w-full flex-col rounded-[24px] border border-line",
           "bg-surface shadow-[var(--shadow-pop)]",
           width,
+          // Its own width held fixed (the max-width above still caps it), so
+          // making room for the panel moves the dialog rather than squeezing it.
+          (side.mounted || leftSide.mounted) ? "xl:w-[42rem] xl:flex-none xl:shrink-0" : null,
         )}
       >
         <div className="relative shrink-0 overflow-hidden rounded-t-[24px] border-b border-line">
@@ -432,7 +600,8 @@ export function Modal({
             {icon && (
               <span
                 className={cx(
-                  "flex size-11 shrink-0 items-center justify-center overflow-hidden rounded-2xl text-white shadow-[var(--shadow-hero)]",
+                  "flex size-11 shrink-0 aspect-square items-center justify-center overflow-hidden rounded-full text-white shadow-[var(--shadow-hero)]",
+                  gradient && "ac-avatar-gradient-shift",
                   iconInteractive && "ring-2 ring-transparent transition-shadow hover:ring-white/40",
                 )}
                 style={{ background: gradient }}
@@ -443,10 +612,17 @@ export function Modal({
             )}
             <div className="min-w-0 flex-1">
               <h2 className="text-[19px] leading-7 font-bold tracking-tight text-ink">{title}</h2>
-              {subtitle && <p className="mt-1 text-[13px] leading-5 text-ink-3">{subtitle}</p>}
+              {subtitle && (
+                typeof subtitle === "string" ? (
+                  <p className="mt-1 text-[13px] leading-5 text-ink-3">{subtitle}</p>
+                ) : (
+                  <div className="mt-1.5">{subtitle}</div>
+                )
+              )}
             </div>
+            {headerActions && <div className="shrink-0 flex items-center gap-2">{headerActions}</div>}
             <button
-              onClick={onClose}
+              onClick={requestClose}
               aria-label="Close"
               className="-mr-2 -mt-1 shrink-0 rounded-xl p-2 text-ink-3 transition-colors hover:bg-surface-2 hover:text-ink"
             >
@@ -456,8 +632,136 @@ export function Modal({
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
       </div>
+      </div>
+      <SlidePanel panel={side} layer="z-10" name="aside" />
+      <SlidePanel panel={detailPanel} layer="z-20" name="detail" />
+      <Modal
+        open={confirmingDiscard}
+        onClose={() => setConfirmingDiscard(false)}
+        title={t("confirm.discardTitle")}
+        width="sm:max-w-md"
+        gradient="linear-gradient(135deg, #dc2626 0%, #b91c1c 100%)"
+      >
+        <p className="px-6 py-5 text-[14px] leading-6.5 text-ink-2">{t("confirm.discardBody")}</p>
+        <ModalFooter>
+          <Button type="button" variant="ghost" onClick={() => setConfirmingDiscard(false)} autoFocus>
+            {t("common.cancel")}
+          </Button>
+          <Button
+            type="button"
+            variant="danger"
+            onClick={() => {
+              setConfirmingDiscard(false);
+              onClose();
+            }}
+          >
+            {t("confirm.discard")}
+          </Button>
+        </ModalFooter>
+      </Modal>
+      {stack.mounted && (
+        <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center">
+          <div
+            className={cx(
+              "flex h-[86%] w-full flex-col justify-center",
+              width,
+              "transition-[translate,opacity] duration-[800ms] ease-[cubic-bezier(0.4,0,0.2,1)]",
+              // Rises from below into focus, a little above centre so the page behind peeks out under it.
+              stack.shown ? "-translate-y-[5vh] opacity-100" : "translate-y-[70vh] opacity-0",
+            )}
+          >
+            <div data-modal-layer="stacked" className="pointer-events-auto flex max-h-full min-h-0 flex-col">
+              {stack.content}
+            </div>
+          </div>
+        </div>
+      )}
+      </div>
     </div>,
     document.body,
+  );
+}
+
+/*
+  A panel that animates both ways, so it outlives its content by one
+  transition: mounted first, shown a frame later (so the browser has a closed
+  state to transition from), and on the way out hidden first and unmounted
+  once the transition has played. The last content is kept so the panel
+  slides away still showing what it showed.
+*/
+type SlideState = { mounted: boolean; shown: boolean; content: ReactNode };
+
+function useSlidePanel(node: ReactNode): SlideState {
+  const present = Boolean(node);
+  const last = useRef<ReactNode>(null);
+  if (node) last.current = node;
+  const [mounted, setMounted] = useState(present);
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    if (present) {
+      setMounted(true);
+      let inner = 0;
+      const outer = requestAnimationFrame(() => {
+        inner = requestAnimationFrame(() => setShown(true));
+      });
+      return () => {
+        cancelAnimationFrame(outer);
+        cancelAnimationFrame(inner);
+      };
+    }
+    setShown(false);
+    const timer = window.setTimeout(() => setMounted(false), ASIDE_MS + 50);
+    return () => window.clearTimeout(timer);
+  }, [present]);
+  return { mounted, shown, content: node ?? last.current };
+}
+
+/** A dialog's side panel: beside it on a wide screen, over it on a narrow one. */
+function SlidePanel({
+  panel,
+  layer,
+  name,
+  position = "right",
+}: {
+  panel: SlideState;
+  layer: string;
+  name: string;
+  position?: "left" | "right";
+}) {
+  if (!panel.mounted) return null;
+  const isLeft = position === "left";
+  return (
+    <div
+      aria-hidden={!panel.shown}
+      data-modal-layer={name}
+      className={cx(
+        "absolute inset-0 flex items-center justify-center",
+        layer,
+        "xl:relative xl:inset-auto xl:z-auto xl:h-full xl:max-h-full xl:overflow-hidden",
+        "transition-[opacity,max-width] duration-[800ms] ease-[cubic-bezier(0.4,0,0.2,1)]",
+        // Exactly the panel's width plus its gap, so no part of the
+        // transition is spent growing past what can be seen.
+        panel.shown ? "opacity-100 xl:max-w-[35rem]" : "pointer-events-none opacity-0 xl:max-w-0",
+      )}
+    >
+      <div
+        className={cx(
+          // A definite height, so the panel's own max-h-full resolves and it
+          // scrolls inside rather than running off the screen.
+          "flex h-full w-full max-w-xl min-w-0 flex-col justify-center xl:w-[34rem] xl:shrink-0",
+          isLeft ? "xl:mr-4" : "xl:ml-4",
+          "transition-transform duration-[800ms] ease-[cubic-bezier(0.4,0,0.2,1)]",
+          // Comes out from behind on a wide screen, in from the edge on a narrow one.
+          panel.shown
+            ? "translate-x-0"
+            : isLeft
+              ? "-translate-x-[110%]"
+              : "translate-x-[110%] xl:-translate-x-10",
+        )}
+      >
+        {panel.content}
+      </div>
+    </div>
   );
 }
 
