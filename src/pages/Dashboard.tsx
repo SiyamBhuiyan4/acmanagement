@@ -30,8 +30,6 @@ import { gradientFor, initialOf } from "../lib/avatar";
 import { plural, relativeTime, startOfLocalDay } from "../lib/format";
 import { useAuthedQuery } from "../lib/session";
 
-/** Demo build: the Revenue tile shows this fixed amount instead of real sales. */
-const DEMO_REVENUE = 1_000_000;
 
 /** Change as a fraction. Null when the baseline is zero — there is no "% of nothing". */
 function change(current: number, previous: number): number | null {
@@ -222,10 +220,10 @@ export function DashboardPage({ onNavigate }: { onNavigate: (r: "products" | "sa
               hero
               accent="sky"
               label={t("dash.revenue")}
-              value={<AnimatedNumber value={DEMO_REVENUE} format={fmt} />}
+              value={<AnimatedNumber value={scoped.revenue} format={fmt} />}
               icon={<CircleDollarSign size={17} />}
               delta={vs(scoped.deltaRevenue)}
-              sub={`${fmt(DEMO_REVENUE)} ${t("dash.allTime")}`}
+              sub={`${fmt(allTime.revenue)} ${t("dash.allTime")}`}
             />
             <StatTile
               accent="violet"
