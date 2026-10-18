@@ -361,6 +361,29 @@ function ProductCard({
   const t = useT();
   const lotCosts = lots.map((l) => l.unitCost);
   const lotPrices = lots.map((l) => l.unitPrice).filter((p): p is number => p !== undefined);
+  const hasVariants = Boolean(product.variants?.length);
+  const variantCosts = hasVariants ? product.variants!.map((v) => v.costPrice) : [];
+  const variantPrices = hasVariants
+    ? product.variants!.map((v) => v.sellPrice).filter((p): p is number => p !== undefined)
+    : [];
+
+  const buyPriceValue =
+    hasVariants && variantCosts.length > 0
+      ? fmtRange(fmt, variantCosts)
+      : lotCosts.length > 0
+        ? fmtRange(fmt, lotCosts)
+        : product.costPrice !== undefined
+          ? fmt(product.costPrice)
+          : "—";
+
+  const sellPriceValue =
+    hasVariants && variantPrices.length > 0
+      ? fmtRange(fmt, variantPrices)
+      : lotPrices.length > 0
+        ? fmtRange(fmt, lotPrices)
+        : product.sellPrice !== undefined
+          ? fmt(product.sellPrice)
+          : "—";
   const out = product.quantity === 0;
   const low = product.quantity > 0 && product.quantity <= 3;
   const [showAll, setShowAll] = useState(false);
@@ -501,10 +524,10 @@ function ProductCard({
         <div className="mt-4 rounded-xl border border-line bg-surface-2/40 p-3">
           <div className="grid grid-cols-3 gap-2 divide-x divide-line">
             <div className="min-w-0 pr-1">
-              <MoneyStat label="Buy price" value={fmtRange(fmt, lotCosts)} />
+              <MoneyStat label="Buy price" value={buyPriceValue} />
             </div>
             <div className="min-w-0 px-2">
-              <MoneyStat label={t("products.sellPrice")} value={fmtRange(fmt, lotPrices)} />
+              <MoneyStat label={t("products.sellPrice")} value={sellPriceValue} />
             </div>
             <div className="min-w-0 pl-2">
               <MoneyStat

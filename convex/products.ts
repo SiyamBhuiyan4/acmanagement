@@ -164,6 +164,9 @@ function validate(name: string) {
 const productArgs = {
   name: v.string(),
   details: v.string(),
+  costPrice: v.optional(v.number()),
+  sellPrice: v.optional(v.number()),
+  quantity: v.optional(v.number()),
   category: v.optional(v.string()),
   subCategory: v.optional(v.string()),
   categoryId: v.optional(v.id("productCategories")),
@@ -180,13 +183,14 @@ export const create = mutation({
     const subCategory = (args.subCategory ?? "").trim();
     return await ctx.db.insert("products", {
       name: args.name.trim(),
-      costPrice: 0,
+      costPrice: args.costPrice ?? 0,
+      sellPrice: args.sellPrice,
       details: args.details.trim(),
       category: category ? category : undefined,
       subCategory: subCategory ? subCategory : undefined,
       categoryId: args.categoryId,
       subCategoryId: args.subCategoryId,
-      quantity: 0,
+      quantity: args.quantity ?? 0,
       unit: args.unit?.trim() || undefined,
       archived: false,
       createdAt: Date.now(),
@@ -203,7 +207,18 @@ export const update = mutation({
     validate(args.name);
     const category = (args.category ?? "").trim();
     const subCategory = (args.subCategory ?? "").trim();
-    await ctx.db.patch(args.id, {
+    const patch: {
+      name: string;
+      details: string;
+      category?: string;
+      subCategory?: string;
+      categoryId?: Id<"productCategories">;
+      subCategoryId?: Id<"productCategories">;
+      unit?: string;
+      costPrice?: number;
+      sellPrice?: number;
+      quantity?: number;
+    } = {
       name: args.name.trim(),
       details: args.details.trim(),
       category: category ? category : undefined,
@@ -211,7 +226,11 @@ export const update = mutation({
       categoryId: args.categoryId,
       subCategoryId: args.subCategoryId,
       unit: args.unit?.trim() || undefined,
-    });
+    };
+    if (args.costPrice !== undefined) patch.costPrice = args.costPrice;
+    if (args.sellPrice !== undefined) patch.sellPrice = args.sellPrice;
+    if (args.quantity !== undefined) patch.quantity = args.quantity;
+    await ctx.db.patch(args.id, patch);
   },
 });
 

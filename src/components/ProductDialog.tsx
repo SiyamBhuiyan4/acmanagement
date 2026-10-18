@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { Camera, PackagePlus, Pencil, Settings2, Trash2, Upload } from "lucide-react";
 import { api } from "../../convex/_generated/api";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
-import { Button, Field, Input, Modal, ModalFooter, Select, Textarea, cx } from "./ui";
+import { AmountInput, Button, Field, Input, Modal, ModalFooter, Select, Textarea, cx } from "./ui";
 import { useT } from "../lib/i18n";
+import { CURRENCY_SYMBOL } from "../lib/format";
 import { errorMessage, useToast } from "../lib/toast";
 import { useAuthedMutation } from "../lib/session";
 import { uploadFile, useFileDrop, useUploadProgress } from "../lib/upload";
@@ -20,11 +21,21 @@ type Draft = {
   name: string;
   categoryId: string;
   subCategoryId: string;
+  costPrice: string;
+  sellPrice: string;
   unit: string;
   details: string;
 };
 
-const EMPTY: Draft = { name: "", categoryId: "", subCategoryId: "", unit: "", details: "" };
+const EMPTY: Draft = {
+  name: "",
+  categoryId: "",
+  subCategoryId: "",
+  costPrice: "",
+  sellPrice: "",
+  unit: "",
+  details: "",
+};
 
 export function ProductDialog({
   open,
@@ -83,6 +94,8 @@ export function ProductDialog({
         name: product.name,
         categoryId: resolvedCategoryId,
         subCategoryId: resolvedSubCategoryId,
+        costPrice: product.costPrice !== undefined ? String(product.costPrice) : "",
+        sellPrice: product.sellPrice !== undefined ? String(product.sellPrice) : "",
         unit: product.unit ?? "",
         details: product.details,
       });
@@ -161,9 +174,13 @@ export function ProductDialog({
       const selectedCat = allCategories.find((c) => c._id === draft.categoryId && !c.parentId);
       const validSubcats = selectedCat ? subcategoriesOf(selectedCat._id) : [];
       const selectedSubCat = validSubcats.find((c) => c._id === draft.subCategoryId);
+      const costPrice = draft.costPrice.trim() !== "" ? Number(draft.costPrice) : undefined;
+      const sellPrice = draft.sellPrice.trim() !== "" ? Number(draft.sellPrice) : undefined;
       const payload = {
         name: draft.name,
         details: draft.details,
+        costPrice,
+        sellPrice,
         category: selectedCat ? selectedCat.name : undefined,
         subCategory: selectedSubCat ? selectedSubCat.name : undefined,
         categoryId: selectedCat ? (selectedCat._id as Id<"productCategories">) : undefined,
@@ -379,6 +396,32 @@ export function ProductDialog({
               <option value="বক্স" />
               <option value="প্যাকেট" />
             </datalist>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Cost price (Buy)" hint="What one unit costs you">
+                {(id) => (
+                  <AmountInput
+                    id={id}
+                    symbol={CURRENCY_SYMBOL}
+                    value={draft.costPrice}
+                    onChange={(e) => set("costPrice", e.target.value)}
+                    placeholder="0"
+                  />
+                )}
+              </Field>
+
+              <Field label={t("products.sellPrice")} hint="Asking price">
+                {(id) => (
+                  <AmountInput
+                    id={id}
+                    symbol={CURRENCY_SYMBOL}
+                    value={draft.sellPrice}
+                    onChange={(e) => set("sellPrice", e.target.value)}
+                    placeholder="Optional"
+                  />
+                )}
+              </Field>
+            </div>
 
             <Field label="Details" hint="Grade, origin, harvest notes, packaging — anything you want to remember.">
               {(id) => (

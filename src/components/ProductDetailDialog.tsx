@@ -201,6 +201,16 @@ export function ProductDetailDialog({
             />
           </div>
 
+          <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-line bg-surface-2/40 px-4 py-3 text-[13px]">
+            <span className="text-ink-3">
+              Buy price: <strong className="text-ink font-semibold">{fmt(data.product.costPrice)}</strong>
+            </span>
+            <span className="text-line-strong">•</span>
+            <span className="text-ink-3">
+              {t("products.sellPrice")}: <strong className="text-ink font-semibold">{data.product.sellPrice !== undefined ? fmt(data.product.sellPrice) : "—"}</strong>
+            </span>
+          </div>
+
           {data.product.details && (
             <div className="rounded-2xl border border-line bg-page p-4">
               <p className="text-[13px] leading-6 whitespace-pre-wrap text-ink-2">
