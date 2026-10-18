@@ -1,4 +1,4 @@
-import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
+import { internalMutation, mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import { requireSession, verifyPasscode } from "./auth";
@@ -385,5 +385,30 @@ export const removeMedia = mutation({
     await unlinkMediaFromLots(ctx, row.vendorId, args.id);
     await ctx.storage.delete(row.storageId);
     await ctx.db.delete(args.id);
+  },
+});
+
+export const internalGenerateUploadUrl = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    return await ctx.storage.generateUploadUrl();
+  },
+});
+
+export const replaceMediaStorageId = internalMutation({
+  args: {
+    mediaId: v.id("vendorMedia"),
+    newStorageId: v.id("_storage"),
+    oldStorageId: v.id("_storage"),
+  },
+  handler: async (ctx, args) => {
+    const row = await ctx.db.get(args.mediaId);
+    if (!row) throw new Error("Media row not found");
+    if (row.storageId !== args.oldStorageId) {
+      throw new Error(`Storage ID mismatch: expected ${args.oldStorageId}, got ${row.storageId}`);
+    }
+    await ctx.db.patch(args.mediaId, { storageId: args.newStorageId });
+    await ctx.storage.delete(args.oldStorageId);
+    return { ok: true, mediaId: args.mediaId, newStorageId: args.newStorageId };
   },
 });
