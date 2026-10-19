@@ -3,6 +3,7 @@ import type { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import { ConvexError } from "convex/values";
 import { requireSession, verifyPasscode } from "./auth";
+import { withLotStock } from "./stock";
 
 /** Attaches a signed, short-lived photo URL to a product row — the stored `photoId` is never useful to the browser on its own. */
 async function withPhoto<T extends { photoId?: Id<"_storage"> }>(ctx: QueryCtx, p: T) {
@@ -30,7 +31,7 @@ export const list = query({
         (p.subCategory ?? "").toLowerCase().includes(term)
       );
     });
-    return await Promise.all(filtered.map((p) => withPhoto(ctx, p)));
+    return await Promise.all(filtered.map(async (p) => withPhoto(ctx, await withLotStock(ctx, p))));
   },
 });
 
@@ -39,7 +40,7 @@ export const get = query({
   handler: async (ctx, args) => {
     await requireSession(ctx, args.token);
     const product = await ctx.db.get(args.id);
-    return product ? await withPhoto(ctx, product) : null;
+    return product ? await withPhoto(ctx, await withLotStock(ctx, product)) : null;
   },
 });
 
@@ -309,7 +310,7 @@ export const detail = query({
     }
 
     return {
-      product: await withPhoto(ctx, product),
+      product: await withPhoto(ctx, await withLotStock(ctx, product)),
       lots: [...lots].sort((a, b) => b.purchasedAt - a.purchasedAt),
       sales: [...sales].sort((a, b) => b.soldAt - a.soldAt).slice(0, 50),
       totals: {

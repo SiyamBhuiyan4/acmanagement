@@ -1,4 +1,4 @@
-import type { MutationCtx } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 
 /*
@@ -39,6 +39,29 @@ export async function syncProduct(ctx: MutationCtx, productId: Id<"products">) {
     costPrice: costs.length > 0 ? Math.min(...costs) : product.costPrice,
     sellPrice: sells.length > 0 ? Math.min(...sells) : product.sellPrice,
   });
+}
+
+/**
+ * The read-side twin of `syncProduct`: a product as its lots say it is now.
+ * The cache fields can be stale (a product saved before its lots existed
+ * keeps a made-up quantity), so every read takes stock from the lots and
+ * does not trust the stored numbers. Nothing is written here.
+ */
+export async function withLotStock<T extends Doc<"products">>(ctx: QueryCtx, product: T) {
+  const lots = await ctx.db
+    .query("stockBatches")
+    .withIndex("by_product", (q) => q.eq("productId", product._id))
+    .collect();
+  const open = lots.filter((l) => left(l) > 0);
+  const quantity = lots.reduce((sum, l) => sum + left(l), 0);
+  const costs = open.map((l) => l.unitCost);
+  const sells = open.map((l) => l.unitPrice).filter((p): p is number => p !== undefined);
+  return {
+    ...product,
+    quantity,
+    costPrice: costs.length > 0 ? Math.min(...costs) : product.costPrice,
+    sellPrice: sells.length > 0 ? Math.min(...sells) : product.sellPrice,
+  };
 }
 
 /** The lot a sale draws from when none was picked: the oldest one with stock left. */

@@ -1,6 +1,7 @@
 import { query } from "./_generated/server";
 import { v } from "convex/values";
 import { requireSession } from "./auth";
+import { withLotStock } from "./stock";
 import { allRowsForDashboard } from "./fixedCosts";
 
 const LOW_STOCK_AT = 3;
@@ -19,7 +20,9 @@ export const overview = query({
   args: { token: v.string() },
   handler: async (ctx, args) => {
     await requireSession(ctx, args.token);
-    const products = await ctx.db.query("products").collect();
+    const products = await Promise.all(
+      (await ctx.db.query("products").collect()).map((p) => withLotStock(ctx, p)),
+    );
     const sales = await ctx.db.query("sales").withIndex("by_soldAt").order("desc").collect();
     /*
       Operating costs — van fuel, the electricity bill — which is what turns
