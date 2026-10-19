@@ -42,16 +42,17 @@ export async function syncProduct(ctx: MutationCtx, productId: Id<"products">) {
 }
 
 /**
- * The read-side twin of `syncProduct`: a product as its lots say it is now.
- * The cache fields can be stale (a product saved before its lots existed
- * keeps a made-up quantity), so every read takes stock from the lots and
- * does not trust the stored numbers. Nothing is written here.
+ * Computes a product's current stock and prices from its lots when lots exist.
+ * If the product has no lots (e.g. catalog products imported without batch records),
+ * it preserves the product's stored quantity and prices rather than resetting them to 0.
  */
-export async function withLotStock<T extends Doc<"products">>(ctx: QueryCtx, product: T) {
-  const lots = await ctx.db
-    .query("stockBatches")
-    .withIndex("by_product", (q) => q.eq("productId", product._id))
-    .collect();
+export function applyLotsToProduct<T extends Doc<"products">>(
+  product: T,
+  lots: Doc<"stockBatches">[] | undefined,
+): T {
+  if (!lots || lots.length === 0) {
+    return product;
+  }
   const open = lots.filter((l) => left(l) > 0);
   const quantity = lots.reduce((sum, l) => sum + left(l), 0);
   const costs = open.map((l) => l.unitCost);
@@ -62,6 +63,36 @@ export async function withLotStock<T extends Doc<"products">>(ctx: QueryCtx, pro
     costPrice: costs.length > 0 ? Math.min(...costs) : product.costPrice,
     sellPrice: sells.length > 0 ? Math.min(...sells) : product.sellPrice,
   };
+}
+
+/**
+ * Single-product lookup: derives stock and prices from lots, with fallback for catalog items.
+ */
+export async function withLotStock<T extends Doc<"products">>(ctx: QueryCtx, product: T): Promise<T> {
+  const lots = await ctx.db
+    .query("stockBatches")
+    .withIndex("by_product", (q) => q.eq("productId", product._id))
+    .collect();
+  return applyLotsToProduct(product, lots);
+}
+
+/**
+ * Attaches live lot stock across an entire list of products in a single database query,
+ * eliminating the N+1 query problem on product list and dashboard views.
+ */
+export async function withBatchLotStock<T extends Doc<"products">>(
+  ctx: QueryCtx,
+  products: T[],
+): Promise<T[]> {
+  if (products.length === 0) return [];
+  const allLots = await ctx.db.query("stockBatches").collect();
+  const lotsByProduct = new Map<string, Doc<"stockBatches">[]>();
+  for (const lot of allLots) {
+    const list = lotsByProduct.get(lot.productId) ?? [];
+    list.push(lot);
+    lotsByProduct.set(lot.productId, list);
+  }
+  return products.map((p) => applyLotsToProduct(p, lotsByProduct.get(p._id)));
 }
 
 /** The lot a sale draws from when none was picked: the oldest one with stock left. */
