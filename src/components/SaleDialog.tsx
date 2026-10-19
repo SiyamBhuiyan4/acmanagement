@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AlertCircle, AlertTriangle, Check, KeyRound, Receipt, Trash2 } from "lucide-react";
+import { AlertCircle, AlertTriangle, Check, KeyRound, Receipt, Trash2, UserPlus } from "lucide-react";
 import { api } from "../../convex/_generated/api";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
 import {
@@ -15,7 +15,7 @@ import {
   cx,
 } from "./ui";
 import { ProductPicker } from "./ProductPicker";
-import { CustomerPicker, type SavedCustomer } from "./CustomerPicker";
+import { CustomerPicker, matchCustomers, type SavedCustomer } from "./CustomerPicker";
 import { ContactAvatar } from "./ContactAvatar";
 import { useSettings } from "../lib/settings";
 import { useT } from "../lib/i18n";
@@ -73,6 +73,8 @@ export function SaleDialog({
 
   const [selectedCustomer, setSelectedCustomer] = useState<SavedCustomer | null>(null);
   const [customerQuery, setCustomerQuery] = useState("");
+  /** The shopkeeper confirmed the typed name is a brand-new customer. */
+  const [isNewCustomer, setIsNewCustomer] = useState(false);
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
@@ -96,6 +98,7 @@ export function SaleDialog({
     if (!open) return;
     setSelectedCustomer(null);
     setCustomerQuery("");
+    setIsNewCustomer(false);
     setName("");
     setPhone("");
     setAddress("");
@@ -179,7 +182,7 @@ export function SaleDialog({
   // full total is Paid, so neither end of the range belongs to this one.
   const partialValid = payment !== "partial" || (paidNow !== "" && paidNowValue > 0 && paidNowValue < total);
   const valid =
-    Boolean(selectedCustomer) &&
+    (Boolean(selectedCustomer) || isNewCustomer) &&
     name.trim().length > 0 &&
     linesValid &&
     discountValue <= subtotal &&
@@ -189,14 +192,16 @@ export function SaleDialog({
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!valid || !selectedCustomer) return;
+    if (!valid) return;
     setSaving(true);
     try {
       await create({
-        customerId: selectedCustomer._id as Id<"customers">,
-        customerName: selectedCustomer.name,
+        customerId: selectedCustomer ? (selectedCustomer._id as Id<"customers">) : undefined,
+        customerName: selectedCustomer ? selectedCustomer.name : name.trim(),
         customerPhone: phone.trim() || undefined,
         customerAddress: address.trim() || undefined,
+        // A new customer is saved in the same write as the sale.
+        saveCustomer: selectedCustomer ? undefined : true,
         items: parsed.map((l) => ({
           productId: l.productId,
           quantity: l.qty,
@@ -307,6 +312,67 @@ export function SaleDialog({
                   </Field>
                 </div>
               </div>
+            ) : isNewCustomer ? (
+              <div className="flex flex-col gap-3 rounded-2xl border border-line-strong bg-page p-3.5 shadow-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-accent">
+                    <UserPlus size={14} />
+                    {t("orders.newCustomerBadge")}
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="shrink-0 text-[12.5px] font-semibold text-ink-2 hover:text-ink hover:bg-surface-2"
+                    onClick={() => {
+                      setIsNewCustomer(false);
+                      setName("");
+                      setPhone("");
+                      setAddress("");
+                      setCustomerQuery("");
+                    }}
+                  >
+                    {t("orders.changeCustomer")}
+                  </Button>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label={t("orders.customer")}>
+                    {(id) => (
+                      <Input
+                        id={id}
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        autoComplete="off"
+                      />
+                    )}
+                  </Field>
+                  <Field label={t("orders.phone")}>
+                    {(id) => (
+                      <Input
+                        id={id}
+                        value={phone}
+                        onChange={(e) => setPhone(e.target.value)}
+                        placeholder="01712-345678"
+                        autoComplete="off"
+                        inputMode="tel"
+                      />
+                    )}
+                  </Field>
+                  <div className="sm:col-span-2">
+                    <Field label={t("orders.address")}>
+                      {(id) => (
+                        <Textarea
+                          id={id}
+                          rows={1}
+                          value={address}
+                          onChange={(e) => setAddress(e.target.value)}
+                          placeholder="১২/ক, মিরপুর রোড, ঢাকা"
+                        />
+                      )}
+                    </Field>
+                  </div>
+                </div>
+              </div>
             ) : (
               <div className="flex flex-col gap-2">
                 <Field label={t("orders.customer")}>
@@ -325,10 +391,40 @@ export function SaleDialog({
                     />
                   )}
                 </Field>
-                <p className="flex items-center gap-1.5 text-[12px] text-ink-3">
-                  <AlertCircle size={14} className="text-accent shrink-0" />
-                  <span>{t("orders.selectCustomerNotice")}</span>
-                </p>
+                {customerQuery.trim() && matchCustomers(customers, customerQuery).length === 0 ? (
+                  <div className="ac-fade-in flex flex-col gap-3 rounded-2xl border border-accent/30 bg-accent/5 p-3.5">
+                    <p className="flex items-start gap-2 text-[13px] font-semibold text-ink">
+                      <UserPlus size={16} className="mt-0.5 shrink-0 text-accent" />
+                      <span>{t("orders.newCustomerAsk").replace("{name}", customerQuery.trim())}</span>
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => {
+                          setIsNewCustomer(true);
+                          setName(customerQuery.trim());
+                          setCustomerQuery("");
+                        }}
+                      >
+                        {t("orders.newCustomerYes")}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setCustomerQuery("")}
+                      >
+                        {t("orders.newCustomerNo")}
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="flex items-center gap-1.5 text-[12px] text-ink-3">
+                    <AlertCircle size={14} className="text-accent shrink-0" />
+                    <span>{t("orders.selectCustomerNotice")}</span>
+                  </p>
+                )}
               </div>
             )}
           </div>

@@ -1,17 +1,17 @@
-import { useMemo, useState, type FormEvent, type ChangeEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { Plus } from "lucide-react";
 import { api } from "../../convex/_generated/api";
-import type { Id } from "../../convex/_generated/dataModel";
+import type { Doc, Id } from "../../convex/_generated/dataModel";
 import {
   AmountInput,
   Button,
   Field,
   Input,
   SectionLabel,
-  Select,
   Textarea,
 } from "./ui";
 import { SidePanelCard } from "./SidePanelCard";
+import { ProductPicker } from "./ProductPicker";
 import {
   PAID_IN_FULL,
   VendorPaymentField,
@@ -61,11 +61,9 @@ export function VendorAddLotPanel({
     [products, productId],
   );
 
-  const handleProductChange = (e: ChangeEvent<HTMLSelectElement>) => {
-    const nextId = e.target.value;
-    setProductId(nextId);
-    const prod = products?.find((p) => p._id === nextId);
-    if (prod && prod.sellPrice !== undefined) {
+  const handlePickProduct = (prod: Doc<"products">) => {
+    setProductId(prod._id);
+    if (prod.sellPrice !== undefined) {
       setUnitPrice(String(prod.sellPrice));
     }
   };
@@ -125,29 +123,16 @@ export function VendorAddLotPanel({
         {/* Product selector */}
         <div className="flex flex-col gap-2">
           <SectionLabel>Product</SectionLabel>
-          <Select
-            value={productId}
-            onChange={handleProductChange}
-            aria-label="Product"
-            required
-          >
-            <option value="" disabled>
-              Choose a product…
-            </option>
-            {(products ?? []).map((p) => {
-              const unitStr = p.unit ? ` ${p.unit}` : "";
-              const stockStr = `Stock: ${p.quantity}${unitStr}`;
-              const retailStr = p.sellPrice !== undefined ? ` • Retail: ${fmt(p.sellPrice)}` : "";
-              return (
-                <option key={p._id} value={p._id}>
-                  {p.name} ({stockStr}{retailStr})
-                </option>
-              );
-            })}
-          </Select>
+          {products === undefined ? (
+            <div className="ac-skeleton h-11 rounded-xl bg-surface-2" aria-hidden />
+          ) : (
+            <ProductPicker products={products} onPick={handlePickProduct} />
+          )}
 
           {selected && (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-line bg-page px-3 py-2 text-[12px] text-ink-2">
+              <span className="font-semibold text-ink">{selected.name}</span>
+              <span className="text-line-strong">•</span>
               <span>
                 <span className="text-ink-3">Unit:</span>{" "}
                 <span className="font-semibold text-ink">{selected.unit || "unit"}</span>

@@ -14,6 +14,23 @@ export type SavedCustomer = {
   orderCount: number;
 };
 
+/** Prefix matches (name word or phone digits) first, then inner-name matches. */
+export function matchCustomers(customers: SavedCustomer[], value: string): SavedCustomer[] {
+  const q = value.trim().toLowerCase();
+  if (!q) return customers.slice(0, 8);
+  const digits = q.replace(/\D/g, "");
+  const prefix: SavedCustomer[] = [];
+  const inner: SavedCustomer[] = [];
+  for (const c of customers) {
+    const name = c.name.toLowerCase();
+    const phone = (c.phone ?? "").replace(/\D/g, "");
+    if (name.startsWith(q) || name.split(/\s+/).some((w) => w.startsWith(q))) prefix.push(c);
+    else if (digits && phone.includes(digits)) prefix.push(c);
+    else if (name.includes(q)) inner.push(c);
+  }
+  return [...prefix, ...inner].slice(0, 8);
+}
+
 /**
  * Customer search picker for sales.
  * Enforces picking an existing customer from the saved customer database.
@@ -37,21 +54,7 @@ export function CustomerPicker({
   const [active, setActive] = useState(0);
   const boxRef = useRef<HTMLDivElement>(null);
 
-  const matches = useMemo(() => {
-    const q = value.trim().toLowerCase();
-    if (!q) return customers.slice(0, 8);
-    const digits = q.replace(/\D/g, "");
-    const prefix: SavedCustomer[] = [];
-    const inner: SavedCustomer[] = [];
-    for (const c of customers) {
-      const name = c.name.toLowerCase();
-      const phone = (c.phone ?? "").replace(/\D/g, "");
-      if (name.startsWith(q) || name.split(/\s+/).some((w) => w.startsWith(q))) prefix.push(c);
-      else if (digits && phone.includes(digits)) prefix.push(c);
-      else if (name.includes(q)) inner.push(c);
-    }
-    return [...prefix, ...inner].slice(0, 8);
-  }, [customers, value]);
+  const matches = useMemo(() => matchCustomers(customers, value), [customers, value]);
 
   useEffect(() => setActive(0), [value]);
 

@@ -221,6 +221,24 @@ export const create = mutation({
           (c) => c.name.trim().toLowerCase() === rawName.toLowerCase(),
         ) ?? null;
     }
+    /*
+      Not saved yet: the shopkeeper has confirmed this is a new customer, so
+      add them now and sell to them in the same write. Name and phone were
+      checked against existing customers above, so this cannot clash.
+    */
+    if (!customer && args.saveCustomer) {
+      const phone = args.customerPhone?.trim() || undefined;
+      const newId = await ctx.db.insert("customers", {
+        name: rawName,
+        phone,
+        extraPhones: [],
+        address: args.customerAddress?.trim() || undefined,
+        key: customerKey(rawName, phone),
+        orderCount: 0,
+        createdAt: Date.now(),
+      });
+      customer = await ctx.db.get(newId);
+    }
     if (!customer) {
       throw new ConvexError(
         "Sales can only be made to existing customers. Please add this customer in the Customers section first.",
