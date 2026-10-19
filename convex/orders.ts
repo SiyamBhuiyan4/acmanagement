@@ -95,7 +95,25 @@ async function resolveItems(
 
     const batch = line.batchId ? await ctx.db.get(line.batchId) : await oldestOpenLot(ctx, line.productId);
     if (line.batchId && !batch) throw new ConvexError("That stock lot no longer exists.");
-    if (!batch) throw new ConvexError(`${product.name} has no stock — add a lot first.`);
+
+    if (!batch) {
+      // Product has no batch lots — sell directly from general catalog stock (product.quantity)
+      const available = product.quantity ?? 0;
+      if (line.quantity > available) {
+        short.push(`${product.name}: ${line.quantity} requested, only ${available} left in stock`);
+      }
+      resolved.push({
+        productId: line.productId,
+        productName: product.name,
+        quantity: line.quantity,
+        unit: product.unit ?? DEFAULT_UNIT,
+        unitPrice: line.unitPrice,
+        unitCost: product.costPrice ?? 0,
+        batchId: undefined,
+      });
+      continue;
+    }
+
     if (batch.productId !== line.productId) {
       throw new ConvexError(`${batch.label} is not a lot of ${product.name}.`);
     }
@@ -132,7 +150,11 @@ async function shortageOf(
   const short: string[] = [];
   for (const line of items) {
     const lot = line.batchId ? await ctx.db.get(line.batchId) : await oldestOpenLot(ctx, line.productId);
-    const available = lot ? (lot.remaining ?? lot.quantity) : 0;
+    let available = lot ? (lot.remaining ?? lot.quantity) : 0;
+    if (!lot) {
+      const prod = await ctx.db.get(line.productId);
+      available = prod?.quantity ?? 0;
+    }
     if (line.quantity > available) {
       short.push(`${line.productName}: only ${available} left`);
     }
@@ -347,7 +369,14 @@ async function fulfil(ctx: MutationCtx, id: Id<"orders">) {
     // An order written before every line named its lot sells out of the
     // oldest one that has stock now.
     const lot = line.batchId ? await ctx.db.get(line.batchId) : await oldestOpenLot(ctx, line.productId);
-    if (lot) await takeFromLot(ctx, lot._id, line.quantity);
+    if (lot) {
+      await takeFromLot(ctx, lot._id, line.quantity);
+    } else {
+      const prod = await ctx.db.get(line.productId);
+      if (prod) {
+        await ctx.db.patch(prod._id, { quantity: Math.max(0, (prod.quantity ?? 0) - line.quantity) });
+      }
+    }
     const effectivePrice = line.unitPrice * (1 - discountRatio);
     // A sale recovers money that was sitting in stock, so it comes off
     // Investment the same way buying stock added to it.

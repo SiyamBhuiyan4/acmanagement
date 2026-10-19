@@ -130,10 +130,15 @@ export function SaleDialog({
       productId: p._id,
       productName: p.name,
       unit: p.unit ?? "পিস",
-      stock: lot ? lot.remaining : 0,
+      stock: lot ? lot.remaining : (p.quantity ?? 0),
       quantity: "1",
-      unitPrice: lot?.unitPrice !== undefined ? String(lot.unitPrice) : "",
-      unitCost: lot ? lot.unitCost : p.costPrice,
+      unitPrice:
+        lot?.unitPrice !== undefined
+          ? String(lot.unitPrice)
+          : p.sellPrice !== undefined
+            ? String(p.sellPrice)
+            : "",
+      unitCost: lot ? lot.unitCost : (p.costPrice ?? 0),
       batchId: lot ? (lot.id as string) : "",
     };
   }

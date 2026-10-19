@@ -127,16 +127,21 @@ export async function returnSaleToStock(ctx: MutationCtx, sale: Doc<"sales">) {
   if (lot && !lot.removedAt) {
     await ctx.db.patch(lot._id, { remaining: Math.min(lot.quantity, left(lot) + sale.quantity) });
   } else {
-    await ctx.db.insert("stockBatches", {
-      productId: sale.productId,
-      productName: product.name,
-      label: "Returned stock",
-      purchasedAt: sale.soldAt,
-      quantity: sale.quantity,
-      remaining: sale.quantity,
-      unitCost: sale.unitCost,
-      unitPrice: product.sellPrice,
-    });
+    const lots = await lotsOf(ctx, sale.productId);
+    if (lots.length > 0) {
+      await ctx.db.insert("stockBatches", {
+        productId: sale.productId,
+        productName: product.name,
+        label: "Returned stock",
+        purchasedAt: sale.soldAt,
+        quantity: sale.quantity,
+        remaining: sale.quantity,
+        unitCost: sale.unitCost,
+        unitPrice: product.sellPrice,
+      });
+      await syncProduct(ctx, sale.productId);
+    } else {
+      await ctx.db.patch(product._id, { quantity: (product.quantity ?? 0) + sale.quantity });
+    }
   }
-  await syncProduct(ctx, sale.productId);
 }
