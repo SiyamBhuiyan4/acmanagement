@@ -247,9 +247,17 @@ export function Stepper({
  * with eight inputs, the one that decides the outcome should not look like the
  * other seven.
  */
+/*
+  Keys a shopkeeper never needs in an amount. "e" would read as scientific
+  notation and "+" / "-" as a sign, and a number input accepts all of them
+  and then reports "Please enter a number." on a value that looks fine.
+*/
+const AMOUNT_BLOCKED_KEYS = new Set(["e", "E", "+", "-"]);
+
 export function AmountInput({
   symbol,
   className,
+  onKeyDown,
   ...rest
 }: InputHTMLAttributes<HTMLInputElement> & { symbol: string }) {
   return (
@@ -258,6 +266,10 @@ export function AmountInput({
       <input
         {...rest}
         type="number"
+        onKeyDown={(e) => {
+          if (AMOUNT_BLOCKED_KEYS.has(e.key)) e.preventDefault();
+          onKeyDown?.(e);
+        }}
         step="any"
         min="0"
         inputMode="decimal"
