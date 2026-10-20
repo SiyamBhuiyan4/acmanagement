@@ -60,6 +60,10 @@ export async function endTraineeSessions(ctx: MutationCtx, traineeId: Id<"traine
   for (const r of rows) await ctx.db.delete(r._id);
 }
 
+// Fixed salt for dummy PBKDF2 derivation when a username doesn't exist,
+// ensuring response time is constant to prevent username enumeration timing attacks.
+const DUMMY_SALT = "e0b1c2d3e4f5061728394a5b6c7d8e9f";
+
 /*
   A wrong password is reported by returning, not throwing: a mutation that
   throws rolls back every write in it, which would discard the failure count
@@ -76,7 +80,12 @@ export const login = mutation({
           .unique()
       : null;
     const wrong = { ok: false as const, error: "Wrong username or password." };
-    if (!trainee || !trainee.passwordHash || !trainee.passwordSalt) return wrong;
+    if (!trainee || !trainee.passwordHash || !trainee.passwordSalt) {
+      // Constant-time mitigation: always compute PBKDF2 so response time
+      // does not reveal whether the username exists.
+      await derive(args.password, DUMMY_SALT, PBKDF2_ITERATIONS);
+      return wrong;
+    }
 
     const now = Date.now();
     if (trainee.lockedUntil && trainee.lockedUntil > now) {
