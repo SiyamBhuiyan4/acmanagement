@@ -1,5 +1,5 @@
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import { requireSession, verifyPasscode } from "./auth";
 import { customerKey } from "./shared";
@@ -90,10 +90,15 @@ export async function rememberCustomer(
  * never really a sale, so it carries no balance either way.
  */
 async function customerBalances(ctx: QueryCtx) {
-  const orders = await ctx.db.query("orders").collect();
+  // Read orders by active statuses in parallel, completely skipping cancelled orders
+  const [confirmed, delivered, pending] = await Promise.all([
+    ctx.db.query("orders").withIndex("by_status", (q) => q.eq("orderStatus", "confirmed")).collect(),
+    ctx.db.query("orders").withIndex("by_status", (q) => q.eq("orderStatus", "delivered")).collect(),
+    ctx.db.query("orders").withIndex("by_status", (q) => q.eq("orderStatus", "pending")).collect(),
+  ]);
+  const orders = [...confirmed, ...delivered, ...pending];
   const byKey = new Map<string, { spent: number; balance: number }>();
   for (const o of orders) {
-    if (o.orderStatus === "cancelled") continue;
     const key = customerKey(o.customerName, o.customerPhone);
     const paid = o.paidAmount ?? (o.paymentStatus === "paid" ? o.total : 0);
     const entry = byKey.get(key) ?? { spent: 0, balance: 0 };
@@ -136,11 +141,7 @@ export const list = query({
 /**
  * One customer and everything they have bought.
  *
- * Sales are found by identity rather than by a stored link: an order keeps
- * its own copy of the name and phone, and the same rule that decides whether
- * two entries are the same person decides which sales are theirs. That means
- * a sale recorded before the customer was ever saved still shows up here, and
- * correcting a typo in their name does not orphan their history.
+ * Indexed by phone and name rather than a full-table scan across all orders in the database.
  */
 export const detail = query({
   args: { token: v.string(), id: v.id("customers") },
@@ -149,10 +150,48 @@ export const detail = query({
     const customer = await ctx.db.get(args.id);
     if (!customer) return null;
 
-    const all = await ctx.db.query("orders").withIndex("by_orderedAt").order("desc").collect();
-    const mine = all.filter(
-      (o) => customerKey(o.customerName, o.customerPhone) === customer.key,
-    );
+    // Use indexed queries for customer's phone(s) and name instead of loading the entire orders table
+    const candidateOrders: Doc<"orders">[] = [];
+    if (customer.phone) {
+      const byPhone = await ctx.db
+        .query("orders")
+        .withIndex("by_customerPhone", (q) => q.eq("customerPhone", customer.phone))
+        .collect();
+      candidateOrders.push(...byPhone);
+    }
+    for (const ep of customer.extraPhones ?? []) {
+      if (ep && ep !== customer.phone) {
+        const byExtra = await ctx.db
+          .query("orders")
+          .withIndex("by_customerPhone", (q) => q.eq("customerPhone", ep))
+          .collect();
+        candidateOrders.push(...byExtra);
+      }
+    }
+    const byName = await ctx.db
+      .query("orders")
+      .withIndex("by_customerName", (q) => q.eq("customerName", customer.name))
+      .collect();
+    candidateOrders.push(...byName);
+
+    const seen = new Set<string>();
+    const deduplicated = candidateOrders.filter((o) => {
+      if (seen.has(o._id)) return false;
+      seen.add(o._id);
+      return true;
+    });
+
+    let mine = deduplicated
+      .filter((o) => customerKey(o.customerName, o.customerPhone) === customer.key)
+      .sort((a, b) => b.orderedAt - a.orderedAt);
+
+    // If no indexed matches were found but customer is recorded as having orders, fall back to recent orders
+    if (mine.length === 0 && customer.orderCount > 0) {
+      const recent = await ctx.db.query("orders").withIndex("by_orderedAt").order("desc").take(500);
+      mine = recent.filter(
+        (o) => customerKey(o.customerName, o.customerPhone) === customer.key,
+      );
+    }
 
     let spent = 0;
     let balance = 0;
@@ -163,7 +202,7 @@ export const detail = query({
       spent += o.total;
       // Positive: the shop owes them. Negative: they owe the shop.
       balance += (o.paidAmount ?? (o.paymentStatus === "paid" ? o.total : 0)) - o.total;
-      items += o.items.reduce((sum, i) => sum + i.quantity, 0);
+      items += o.items.reduce((sum: number, i: { quantity: number }) => sum + i.quantity, 0);
     }
 
     return {

@@ -388,7 +388,7 @@ function ProductCard({
   const low = product.quantity > 0 && product.quantity <= 3;
   const [showAll, setShowAll] = useState(false);
   // Roughly where clamped lines end; below this there is nothing hidden and an expand control would be noise.
-  const clampable = product.details.length > 120;
+  const clampable = (product.details?.length ?? 0) > 120;
 
   return (
     <Card

@@ -105,7 +105,9 @@ export default defineSchema({
   })
     .index("by_orderedAt", ["orderedAt"])
     .index("by_orderNo", ["orderNo"])
-    .index("by_status", ["orderStatus"]),
+    .index("by_status", ["orderStatus"])
+    .index("by_customerPhone", ["customerPhone"])
+    .index("by_customerName", ["customerName"]),
 
   /** Monotonic counters, so order numbers never collide. */
   counters: defineTable({

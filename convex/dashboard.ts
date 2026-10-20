@@ -22,14 +22,32 @@ export const overview = query({
     await requireSession(ctx, args.token);
     const rawProducts = await ctx.db.query("products").collect();
     const products = await withBatchLotStock(ctx, rawProducts);
-    const sales = await ctx.db.query("sales").withIndex("by_soldAt").order("desc").collect();
-    /*
-      Operating costs — van fuel, the electricity bill — which is what turns
-      gross profit into net. Kept separate from a sale's `unitCost`, because
-      that one is recovered when the unit sells and an operating cost never
-      is; adding them together would make both figures meaningless.
-    */
-    const costs = await ctx.db.query("costs").withIndex("by_spentAt").order("desc").collect();
+    // One extra day of slack so a timezone shift can't clip the oldest bucket.
+    const since = Date.now() - (WINDOW_DAYS + 1) * 24 * 60 * 60 * 1000;
+
+    // Query sales and costs inside the active window using index ranges
+    const windowSalesRaw = await ctx.db
+      .query("sales")
+      .withIndex("by_soldAt", (q) => q.gte("soldAt", since))
+      .order("desc")
+      .collect();
+
+    const olderSales = await ctx.db
+      .query("sales")
+      .withIndex("by_soldAt", (q) => q.lt("soldAt", since))
+      .collect();
+
+    const windowCostsRaw = await ctx.db
+      .query("costs")
+      .withIndex("by_spentAt", (q) => q.gte("spentAt", since))
+      .order("desc")
+      .collect();
+
+    const olderCosts = await ctx.db
+      .query("costs")
+      .withIndex("by_spentAt", (q) => q.lt("spentAt", since))
+      .collect();
+
     /*
       Fixed costs — rent, the wifi bill, salary — booked once a month rather
       than logged as they happen. They still eat into net profit the same as
@@ -43,14 +61,26 @@ export const overview = query({
     let revenue = 0;
     let cost = 0;
     let unitsSold = 0;
-    for (const s of sales) {
+    for (const s of windowSalesRaw) {
+      revenue += s.unitPrice * s.quantity;
+      cost += s.unitCost * s.quantity;
+      unitsSold += s.quantity;
+    }
+    for (const s of olderSales) {
       revenue += s.unitPrice * s.quantity;
       cost += s.unitCost * s.quantity;
       unitsSold += s.quantity;
     }
 
+    const windowCosts = windowCostsRaw.map((c) => ({
+      id: c._id as string,
+      name: c.name,
+      spentAt: c.spentAt,
+      amount: c.amount,
+    }));
     const allCosts = [
-      ...costs.map((c) => ({ id: c._id as string, name: c.name, spentAt: c.spentAt, amount: c.amount })),
+      ...windowCosts,
+      ...olderCosts.map((c) => ({ id: c._id as string, name: c.name, spentAt: c.spentAt, amount: c.amount })),
       ...fixedCostRows,
     ].sort((a, b) => b.spentAt - a.spentAt);
 
@@ -65,8 +95,7 @@ export const overview = query({
       inventoryCost += p.quantity * p.costPrice;
     }
 
-    // One extra day of slack so a timezone shift can't clip the oldest bucket.
-    const since = Date.now() - (WINDOW_DAYS + 1) * 24 * 60 * 60 * 1000;
+    const totalSalesCount = windowSalesRaw.length + olderSales.length;
 
     return {
       allTime: {
@@ -83,7 +112,7 @@ export const overview = query({
         net: revenue - cost - operatingCost,
         margin: revenue > 0 ? (revenue - cost) / revenue : 0,
         netMargin: revenue > 0 ? (revenue - cost - operatingCost) / revenue : 0,
-        salesCount: sales.length,
+        salesCount: totalSalesCount,
         unitsSold,
         costsCount: allCosts.length,
       },
@@ -99,25 +128,26 @@ export const overview = query({
           .sort((a, b) => a.quantity - b.quantity)
           .slice(0, 6),
       },
-      recentSales: sales.slice(0, 8),
-      windowSales: sales
-        .filter((s) => s.soldAt >= since)
-        .map((s) => ({
-          id: s._id as string,
-          productId: s.productId as string,
-          productName: s.productName,
-          soldAt: s.soldAt,
-          units: s.quantity,
-          revenue: s.unitPrice * s.quantity,
-          profit: (s.unitPrice - s.unitCost) * s.quantity,
-        })),
+      recentSales: windowSalesRaw.slice(0, 8),
+      windowSales: windowSalesRaw.map((s) => ({
+        id: s._id as string,
+        productId: s.productId as string,
+        productName: s.productName,
+        soldAt: s.soldAt,
+        units: s.quantity,
+        revenue: s.unitPrice * s.quantity,
+        profit: (s.unitPrice - s.unitCost) * s.quantity,
+      })),
       /*
         One dated row per cost in the window, for the same reason the sales
         are not pre-aggregated: the page's range control is applied in the
         browser's timezone, and a total summed here could not be re-scoped
         without a second round trip.
       */
-      windowCosts: allCosts.filter((c) => c.spentAt >= since),
+      windowCosts: [
+        ...windowCosts,
+        ...fixedCostRows.filter((c) => c.spentAt >= since),
+      ].sort((a, b) => b.spentAt - a.spentAt),
       windowDays: WINDOW_DAYS,
     };
   },

@@ -38,10 +38,11 @@ type Basis = "projected" | "realised";
 export function ProfitPage() {
   const { fmt, fmtNum, fmtPercent, fmtDateFull } = useSettings();
   const t = useT();
-  const data = useAuthedQuery(api.profit.summary);
+  const range = useDateRange(0, "ac.range.profit");
+  const { from, to } = range.bounds;
+  const data = useAuthedQuery(api.profit.summary, { from, to });
 
   const [basis, setBasis] = useState<Basis>("projected");
-  const range = useDateRange(0, "ac.range.profit");
   const [editing, setEditing] = useState<BatchRow | null>(null);
   const [deleting, setDeleting] = useState<BatchRow | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -51,7 +52,6 @@ export function ProfitPage() {
     date, sales by the date they were sold. A split scoped to one but not the
     other would be quietly wrong.
   */
-  const { from, to } = range.bounds;
   const scoped = useMemo(() => {
     if (!data) return null;
     // Depend on the bounds, not the hook's return value — that object is new

@@ -446,11 +446,33 @@ export const openLots = query({
  * separate round trips.
  */
 export const summary = query({
-  args: { token: v.string() },
+  args: {
+    token: v.string(),
+    from: v.optional(v.number()),
+    to: v.optional(v.number()),
+  },
   handler: async (ctx, args) => {
     await requireSession(ctx, args.token);
 
-    const rows = await ctx.db.query("stockBatches").withIndex("by_purchasedAt").order("desc").collect();
+    const hasFrom = args.from !== undefined && args.from > 0;
+    const hasTo = args.to !== undefined && args.to < Number.MAX_SAFE_INTEGER;
+
+    // Use indexed bounds for stock lots if a date range is given
+    const rows = hasFrom || hasTo
+      ? await ctx.db
+          .query("stockBatches")
+          .withIndex("by_purchasedAt", (q) => {
+            if (hasFrom && hasTo) {
+              return q.gte("purchasedAt", args.from!).lte("purchasedAt", args.to!);
+            }
+            if (hasFrom) {
+              return q.gte("purchasedAt", args.from!);
+            }
+            return q.lte("purchasedAt", args.to!);
+          })
+          .order("desc")
+          .collect()
+      : await ctx.db.query("stockBatches").withIndex("by_purchasedAt").order("desc").collect();
     /*
       Profit is projected at the lot's own sell price, and at cost for an old
       lot that has none, which shows no margin rather than inventing one.
@@ -502,11 +524,23 @@ export const summary = query({
       percentage of profit that has not been earned yet is how a split like
       this quietly overspends.
 
-      Sales are attributed per product rather than per lot. Deciding which lot
-      a given sale drew from would need a FIFO rule this data does not carry,
-      and inventing one would make the numbers look more precise than they are.
+      Indexed by soldAt to prevent unbounded table reads when scoped by date.
     */
-    const sales = await ctx.db.query("sales").collect();
+    const sales = hasFrom || hasTo
+      ? await ctx.db
+          .query("sales")
+          .withIndex("by_soldAt", (q) => {
+            if (hasFrom && hasTo) {
+              return q.gte("soldAt", args.from!).lte("soldAt", args.to!);
+            }
+            if (hasFrom) {
+              return q.gte("soldAt", args.from!);
+            }
+            return q.lte("soldAt", args.to!);
+          })
+          .order("desc")
+          .collect()
+      : await ctx.db.query("sales").withIndex("by_soldAt").order("desc").collect();
 
     return {
       buckets,

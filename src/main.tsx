@@ -6,6 +6,7 @@ import { SettingsProvider } from "./lib/settings";
 import { SessionProvider } from "./lib/session";
 import { PasscodeGate } from "./components/PasscodeGate";
 import { ToastProvider } from "./lib/toast";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import "./index.css";
 
 const convexUrl = import.meta.env.VITE_CONVEX_URL as string | undefined;
@@ -20,13 +21,15 @@ if (!convexUrl) {
   const convex = new ConvexReactClient(convexUrl);
   root.render(
     <StrictMode>
-      <ConvexProvider client={convex}>
-        <SettingsProvider>
-          <ToastProvider>
-            <Root />
-          </ToastProvider>
-        </SettingsProvider>
-      </ConvexProvider>
+      <ErrorBoundary>
+        <ConvexProvider client={convex}>
+          <SettingsProvider>
+            <ToastProvider>
+              <Root />
+            </ToastProvider>
+          </SettingsProvider>
+        </ConvexProvider>
+      </ErrorBoundary>
     </StrictMode>,
   );
 }
