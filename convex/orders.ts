@@ -89,6 +89,8 @@ async function resolveItems(
 ) {
   const resolved = [];
   const short: string[] = [];
+  const allocated = new Map<string, number>();
+
   for (const line of items) {
     const product = await ctx.db.get(line.productId);
     if (!product) throw new ConvexError("A product on this sale no longer exists.");
@@ -96,11 +98,16 @@ async function resolveItems(
     const batch = line.batchId ? await ctx.db.get(line.batchId) : await oldestOpenLot(ctx, line.productId);
     if (line.batchId && !batch) throw new ConvexError("That stock lot no longer exists.");
 
+    const key = batch ? `b:${batch._id}` : `p:${line.productId}`;
+    const already = allocated.get(key) ?? 0;
+    const totalNeeded = already + line.quantity;
+    allocated.set(key, totalNeeded);
+
     if (!batch) {
       // Product has no batch lots — sell directly from general catalog stock (product.quantity)
       const available = product.quantity ?? 0;
-      if (line.quantity > available) {
-        short.push(`${product.name}: ${line.quantity} requested, only ${available} left in stock`);
+      if (totalNeeded > available) {
+        short.push(`${product.name}: ${totalNeeded} requested, only ${available} left in stock`);
       }
       resolved.push({
         productId: line.productId,
@@ -118,8 +125,8 @@ async function resolveItems(
       throw new ConvexError(`${batch.label} is not a lot of ${product.name}.`);
     }
     const left = batch.remaining ?? batch.quantity;
-    if (line.quantity > left) {
-      short.push(`${product.name} (${batch.label}): ${line.quantity} requested, ${left} left in that lot`);
+    if (totalNeeded > left) {
+      short.push(`${product.name} (${batch.label}): ${totalNeeded} requested, ${left} left in that lot`);
     }
 
     /*
@@ -148,15 +155,22 @@ async function shortageOf(
   items: { productId: Id<"products">; productName: string; quantity: number; batchId?: Id<"stockBatches"> }[],
 ) {
   const short: string[] = [];
+  const allocated = new Map<string, number>();
+
   for (const line of items) {
     const lot = line.batchId ? await ctx.db.get(line.batchId) : await oldestOpenLot(ctx, line.productId);
+    const key = lot ? `b:${lot._id}` : `p:${line.productId}`;
+    const already = allocated.get(key) ?? 0;
+    const totalNeeded = already + line.quantity;
+    allocated.set(key, totalNeeded);
+
     let available = lot ? (lot.remaining ?? lot.quantity) : 0;
     if (!lot) {
       const prod = await ctx.db.get(line.productId);
       available = prod?.quantity ?? 0;
     }
-    if (line.quantity > available) {
-      short.push(`${line.productName}: only ${available} left`);
+    if (totalNeeded > available) {
+      short.push(`${line.productName}: ${totalNeeded} requested in total, only ${available} left`);
     }
   }
   return short;

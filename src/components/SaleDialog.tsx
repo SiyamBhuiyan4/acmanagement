@@ -67,7 +67,7 @@ export function SaleDialog({
   const t = useT();
   const toast = useToast();
   const products = useAuthedQuery(api.products.list, {});
-  const customers = useAuthedQuery(api.customers.list) ?? [];
+  const customers = useAuthedQuery(api.customers.list, { withBalances: false }) ?? [];
   const openLots = (useAuthedQuery(api.profit.openLots) ?? []) as OpenLot[];
   const create = useAuthedMutation(api.orders.create);
 

@@ -90,13 +90,12 @@ export async function rememberCustomer(
  * never really a sale, so it carries no balance either way.
  */
 async function customerBalances(ctx: QueryCtx) {
-  // Read orders by active statuses in parallel, completely skipping cancelled orders
-  const [confirmed, delivered, pending] = await Promise.all([
+  // Read only booked orders (confirmed and delivered) in parallel; pending inquiries and cancelled orders carry no debt
+  const [confirmed, delivered] = await Promise.all([
     ctx.db.query("orders").withIndex("by_status", (q) => q.eq("orderStatus", "confirmed")).collect(),
     ctx.db.query("orders").withIndex("by_status", (q) => q.eq("orderStatus", "delivered")).collect(),
-    ctx.db.query("orders").withIndex("by_status", (q) => q.eq("orderStatus", "pending")).collect(),
   ]);
-  const orders = [...confirmed, ...delivered, ...pending];
+  const orders = [...confirmed, ...delivered];
   const byKey = new Map<string, { spent: number; balance: number }>();
   for (const o of orders) {
     const key = customerKey(o.customerName, o.customerPhone);
@@ -111,17 +110,18 @@ async function customerBalances(ctx: QueryCtx) {
 
 /** The address book, most frequent first. */
 export const list = query({
-  args: { token: v.string() },
+  args: { token: v.string(), withBalances: v.optional(v.boolean()) },
   handler: async (ctx, args) => {
     await requireSession(ctx, args.token);
     const rows = await ctx.db.query("customers").collect();
-    const balances = await customerBalances(ctx);
+    const needBalances = args.withBalances !== false;
+    const balances = needBalances ? await customerBalances(ctx) : null;
     const sorted = rows.sort(
       (a, b) => b.orderCount - a.orderCount || a.name.localeCompare(b.name),
     );
     return await Promise.all(
       sorted.map(async (c) => ({
-        ...(await withPhoto(ctx, c)),
+        ...(needBalances ? await withPhoto(ctx, c) : { photoUrl: null }),
         _id: c._id,
         name: c.name,
         phone: c.phone,
@@ -131,8 +131,8 @@ export const list = query({
         address: c.address,
         orderCount: c.orderCount,
         lastOrderedAt: c.lastOrderedAt,
-        spent: balances.get(c.key)?.spent ?? 0,
-        balance: balances.get(c.key)?.balance ?? 0,
+        spent: balances ? (balances.get(c.key)?.spent ?? 0) : 0,
+        balance: balances ? (balances.get(c.key)?.balance ?? 0) : 0,
       })),
     );
   },

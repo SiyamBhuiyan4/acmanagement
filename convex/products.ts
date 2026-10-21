@@ -53,10 +53,10 @@ export const get = query({
  * the browser's timezone.
  */
 export const salesWindow = query({
-  args: { token: v.string() },
+  args: { token: v.string(), since: v.optional(v.number()) },
   handler: async (ctx, args) => {
     await requireSession(ctx, args.token);
-    const since = Date.now() - 366 * 24 * 60 * 60 * 1000;
+    const since = args.since ?? Date.now() - 366 * 24 * 60 * 60 * 1000;
     const sales = await ctx.db
       .query("sales")
       .withIndex("by_soldAt", (q) => q.gte("soldAt", since))
@@ -143,11 +143,11 @@ export const categories = query({
   args: { token: v.string() },
   handler: async (ctx, args) => {
     await requireSession(ctx, args.token);
-    const all = await ctx.db.query("products").collect();
+    // Read from productCategories directly rather than scanning the entire products table
+    const cats = await ctx.db.query("productCategories").collect();
     const set = new Set<string>();
-    for (const p of all) {
-      const c = (p.category ?? "").trim();
-      if (c) set.add(c);
+    for (const c of cats) {
+      if (!c.parentId && c.name) set.add(c.name.trim());
     }
     return [...set].sort((a, b) => a.localeCompare(b));
   },

@@ -97,7 +97,7 @@ export function SalesPage() {
   const t = useT();
   const toast = useToast();
   const orders = useAuthedQuery(api.orders.list, {});
-  const customers = useAuthedQuery(api.customers.list) ?? [];
+  const customers = useAuthedQuery(api.customers.list, { withBalances: false }) ?? [];
   /*
     Only `windowCosts` is used from here — the per-range operating costs that
     turn gross profit into net, scoped the same way `range` scopes the sales

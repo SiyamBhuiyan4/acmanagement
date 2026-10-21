@@ -45,10 +45,11 @@ export function ProductsPage() {
   const [showArchived, setShowArchived] = useState(false);
   const [managingCategories, setManagingCategories] = useState(false);
 
-  const products = useAuthedQuery(api.products.list, { search, includeArchived: showArchived });
+  // Fetch products once per archived toggle; search is filtered client-side to eliminate backend I/O on keystrokes
+  const products = useAuthedQuery(api.products.list, { includeArchived: showArchived });
   const { categories: productCats, allCategories, subcategoriesOf, label: catLabel, categoryOf, subCategoryOf } = useProductCategories();
   const range = useRangeFilter("ac.range.products");
-  const salesWindow = useAuthedQuery(api.products.salesWindow);
+  const salesWindow = useAuthedQuery(api.products.salesWindow, { since: range.since });
 
   // Per-product profit for the picked range: each sale already carries the
   // profit it actually made, so this is a sum, never a recalculation against
@@ -79,7 +80,16 @@ export function ProductsPage() {
   const [viewing, setViewing] = useState<Doc<"products"> | null>(null);
 
   const visible = useMemo(() => {
+    const term = search.trim().toLowerCase();
     const filtered = (products ?? []).filter((p) => {
+      if (term) {
+        const matchesSearch =
+          p.name.toLowerCase().includes(term) ||
+          (p.details ?? "").toLowerCase().includes(term) ||
+          (p.category ?? "").toLowerCase().includes(term) ||
+          (p.subCategory ?? "").toLowerCase().includes(term);
+        if (!matchesSearch) return false;
+      }
       if (category) {
         const catDoc = categoryOf(p);
         const matchesCategory = p.categoryId === category || catDoc?._id === category || p.category === category;
