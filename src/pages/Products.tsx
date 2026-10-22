@@ -82,20 +82,26 @@ export function ProductsPage() {
   const visible = useMemo(() => {
     const term = search.trim().toLowerCase();
     const filtered = (products ?? []).filter((p) => {
+      const catDoc = categoryOf(p);
+      const subDoc = subCategoryOf(p);
       if (term) {
+        const catName = catDoc ? catLabel(catDoc).toLowerCase() : "";
+        const subName = subDoc ? catLabel(subDoc).toLowerCase() : "";
+        const tagsStr = (p.tags ?? []).join(" ").toLowerCase();
         const matchesSearch =
           p.name.toLowerCase().includes(term) ||
           (p.details ?? "").toLowerCase().includes(term) ||
           (p.category ?? "").toLowerCase().includes(term) ||
-          (p.subCategory ?? "").toLowerCase().includes(term);
+          (p.subCategory ?? "").toLowerCase().includes(term) ||
+          catName.includes(term) ||
+          subName.includes(term) ||
+          tagsStr.includes(term);
         if (!matchesSearch) return false;
       }
       if (category) {
-        const catDoc = categoryOf(p);
         const matchesCategory = p.categoryId === category || catDoc?._id === category || p.category === category;
         if (!matchesCategory) return false;
         if (subCategory) {
-          const subDoc = subCategoryOf(p);
           const matchesSub = p.subCategoryId === subCategory || subDoc?._id === subCategory || p.subCategory === subCategory;
           if (!matchesSub) return false;
         }
@@ -114,7 +120,7 @@ export function ProductsPage() {
       }
       return b.createdAt - a.createdAt;
     });
-  }, [products, category, subCategory, sort, profitByProduct, allCategories]);
+  }, [products, search, category, subCategory, sort, profitByProduct, allCategories]);
 
   const pager = usePagination(visible, `${search}|${category}|${subCategory}|${sort}|${showArchived}`, 25);
 
